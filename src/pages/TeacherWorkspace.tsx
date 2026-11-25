@@ -190,8 +190,11 @@ export function TeacherWorkspace() {
     setLoading(true);
     try {
       let allowedGroupIds: string[] | null = null;
+      const hasViewAllPermission = Boolean(profile.permissions?.view_all_groups);
+      const shouldRestrictToAssignedGroups =
+        profile.role === 'assistant' || (profile.role === 'sub_admin' && !hasViewAllPermission);
 
-      if (profile.role === 'assistant') {
+      if (shouldRestrictToAssignedGroups) {
         const { data: assignedRows, error: assignError } = await supabase
           .from('assistant_groups')
           .select('group_id')
