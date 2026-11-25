@@ -61,24 +61,28 @@ export function Login() {
       } else {
         if (!(await checkAuthorized())) return;
 
-        // First-time setup: sign the user up with their chosen password.
-        // Supabase only creates the account if the email is on the allowlist
-        // (enforced again by the database trigger), and confirmations are off,
-        // so the user is signed in immediately.
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        // First-time setup: set the chosen password on the pre-provisioned account
+        // and immediately sign the user in.
+        const { error: setupError } = await supabase.rpc('setup_first_time_password', {
+          user_email: trimmedEmail,
+          new_password: password,
+        });
+
+        if (setupError) {
+          setError(setupError.message);
+          return;
+        }
+
+        const { error: signInError } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password,
         });
-        if (signUpError) {
-          if (signUpError.message.includes('already registered')) {
-            setError('This email already has a password. Use Sign In instead.');
-          } else {
-            setError(signUpError.message);
-          }
+
+        if (signInError) {
+          setError(signInError.message === 'Invalid login credentials'
+            ? 'Incorrect email or password.'
+            : signInError.message);
           return;
-        }
-        if (!signUpData.session) {
-          setError(NOT_AUTHORIZED_MSG);
         }
       }
     } catch (err) {
@@ -102,6 +106,7 @@ export function Login() {
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <div className="flex gap-1 mb-6 bg-slate-100 rounded-lg p-1">
             <button
+              type="button"
               onClick={() => switchMode('signin')}
               className={`flex-1 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1.5 ${
                 mode === 'signin' ? 'bg-white shadow text-slate-900' : 'text-slate-500'
@@ -111,6 +116,7 @@ export function Login() {
               Sign In
             </button>
             <button
+              type="button"
               onClick={() => switchMode('setup')}
               className={`flex-1 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1.5 ${
                 mode === 'setup' ? 'bg-white shadow text-slate-900' : 'text-slate-500'
