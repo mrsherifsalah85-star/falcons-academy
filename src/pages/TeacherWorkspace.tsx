@@ -17,6 +17,7 @@ import {
   Eraser,
   CheckCircle2,
   MessageSquare,
+  ExternalLink,
 } from 'lucide-react';
 
 const READING_OPTIONS = ['Good', 'Needs Practice', 'Needs Study More'];
@@ -24,6 +25,11 @@ const HOMEWORK_OPTIONS = ['Done Well', 'Careless', 'Not Done'];
 const BEHAVIOR_OPTIONS = ['Committed', 'Disruptive'];
 
 type BuiltinShareKey = 'quiz' | 'dictation' | 'reading' | 'homework' | 'behavior';
+
+interface ExtendedSessionReport extends SessionReport {
+  session_homework?: string | null;
+  session_material?: string | null;
+}
 
 interface ShareTogglesState {
   quiz: boolean;
@@ -61,6 +67,17 @@ function extractErrorMessage(err: unknown, fallback = 'Failed to save'): string 
   return fallback;
 }
 
+function isValidHttpUrl(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function ShareToggleButton({
   active,
   onToggle,
@@ -92,9 +109,13 @@ export function TeacherWorkspace() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [students, setStudents] = useState<Student[]>([]);
-  const [sessionReports, setSessionReports] = useState<SessionReport[]>([]);
-  const [selectedReport, setSelectedReport] = useState<SessionReport | null>(null);
-  const [reportContent, setReportContent] = useState('');
+  const [sessionReports, setSessionReports] = useState<ExtendedSessionReport[]>([]);
+  const [selectedReport, setSelectedReport] = useState<ExtendedSessionReport | null>(null);
+
+  const [sessionContent, setSessionContent] = useState('');
+  const [sessionHomework, setSessionHomework] = useState('');
+  const [sessionMaterial, setSessionMaterial] = useState('');
+
   const [reportPace, setReportPace] = useState<SessionReport['pace']>('on_time');
   const [reportDate, setReportDate] = useState(new Date().toISOString().split('T')[0]);
   const [quizMaxScore, setQuizMaxScore] = useState(100);
@@ -192,7 +213,7 @@ export function TeacherWorkspace() {
         if (error) {
           setSaveMsg({ type: 'error', text: extractErrorMessage(error, 'Failed to load sessions') });
         } else {
-          setSessionReports((data as SessionReport[]) || []);
+          setSessionReports((data as ExtendedSessionReport[]) || []);
         }
       });
   }, [selectedGroupId]);
@@ -217,13 +238,17 @@ export function TeacherWorkspace() {
 
   useEffect(() => {
     if (selectedReport) {
-      setReportContent(selectedReport.content);
+      setSessionContent(selectedReport.content ?? '');
+      setSessionHomework(selectedReport.session_homework ?? '');
+      setSessionMaterial(selectedReport.session_material ?? '');
       setReportPace(selectedReport.pace);
       setReportDate(selectedReport.report_date);
       setQuizMaxScore(selectedReport.quiz_max_score ?? 100);
       setDictationMaxScore(selectedReport.dictation_max_score ?? 10);
     } else {
-      setReportContent('');
+      setSessionContent('');
+      setSessionHomework('');
+      setSessionMaterial('');
       setReportPace('on_time');
       setReportDate(new Date().toISOString().split('T')[0]);
       setQuizMaxScore(100);
@@ -263,40 +288,39 @@ export function TeacherWorkspace() {
 
     try {
       let reportId: string;
+      const sessionPayload = {
+        content: sessionContent,
+        session_homework: sessionHomework,
+        session_material: sessionMaterial.trim(),
+        pace: reportPace,
+        report_date: reportDate,
+        quiz_max_score: quizMaxScore,
+        dictation_max_score: dictationMaxScore,
+      };
 
       if (selectedReport) {
         const { data, error } = await supabase
           .from('sessions')
-          .update({
-            content: reportContent,
-            pace: reportPace,
-            report_date: reportDate,
-            quiz_max_score: quizMaxScore,
-            dictation_max_score: dictationMaxScore,
-          })
+          .update(sessionPayload)
           .eq('id', selectedReport.id)
           .select()
           .single();
         if (error) throw error;
-        reportId = (data as SessionReport).id;
-        setSelectedReport(data as SessionReport);
+        reportId = (data as ExtendedSessionReport).id;
+        setSelectedReport(data as ExtendedSessionReport);
       } else {
         const { data, error } = await supabase
           .from('sessions')
           .insert({
             group_id: selectedGroupId,
             teacher_id: profile.id,
-            content: reportContent,
-            pace: reportPace,
-            report_date: reportDate,
-            quiz_max_score: quizMaxScore,
-            dictation_max_score: dictationMaxScore,
+            ...sessionPayload,
           })
           .select()
           .single();
         if (error) throw error;
-        reportId = (data as SessionReport).id;
-        setSelectedReport(data as SessionReport);
+        reportId = (data as ExtendedSessionReport).id;
+        setSelectedReport(data as ExtendedSessionReport);
       }
 
       for (const student of students) {
@@ -332,7 +356,7 @@ export function TeacherWorkspace() {
         .eq('group_id', selectedGroupId)
         .order('report_date', { ascending: false });
       if (reportsErr) throw reportsErr;
-      setSessionReports((reportsData as SessionReport[]) || []);
+      setSessionReports((reportsData as ExtendedSessionReport[]) || []);
 
       const { data: evalData, error: evalErr } = await supabase
         .from('student_evaluations')
@@ -352,7 +376,9 @@ export function TeacherWorkspace() {
 
   const handleNewReport = () => {
     setSelectedReport(null);
-    setReportContent('');
+    setSessionContent('');
+    setSessionHomework('');
+    setSessionMaterial('');
     setReportPace('on_time');
     setReportDate(new Date().toISOString().split('T')[0]);
     setQuizMaxScore(100);
@@ -661,17 +687,27 @@ export function TeacherWorkspace() {
     const followUpSection =
       sections.length > 0 ? sections.join('\n\n') : 'لا توجد ملاحظات أو حالات متابعة خاصة لهذه الجلسة.';
 
-    const topics = selectedReport.content?.trim() || 'لم يتم تسجيل الدروس لهذه الجلسة.';
+    const topics = sessionContent.trim() || 'لم يتم تسجيل محتوى الجلسة بعد.';
+    const homeworkText = sessionHomework.trim() || 'لا يوجد واجب مسجل لهذه الجلسة.';
+    const materialLine = sessionMaterial.trim()
+      ? `\n\u{1F3A5} *فيديو / مادة الجلسة:*\n${sessionMaterial.trim()}`
+      : '';
 
     const message =
 `\u{1F4DA} *أكاديمية فالكونز - تقرير السيشن* \u{1F4DA}
 \u{1F4C5} *التاريخ:* ${dateStr}
 \u{1F465} *المجموعة:* ${groupName}
 \u{1F468}\u200D\u{1F3EB} *المدرس:* ${teacherName}
-\u{1F4DD} *الدروس التي تم شرحها:*
+
+\u{1F4DD} *محتوى الجلسة (Session Content):*
 ${topics}
+
+\u{1F4D8} *واجب الجلسة (Session Homework):*
+${homeworkText}${materialLine}
+
 \u26A0\uFE0F *متابعة وتنبيهات الطلاب:*
 ${followUpSection}
+
 شكراً لمتابعتكم المستمرة معنا! \u{1F31F}`;
 
     const encoded = encodeURIComponent(message);
@@ -814,7 +850,7 @@ ${followUpSection}
           )}
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <h2 className="text-lg font-semibold text-slate-900">Session Report</h2>
               <div className="flex items-center gap-2 flex-wrap">
                 <input
@@ -861,14 +897,59 @@ ${followUpSection}
               </div>
             </div>
 
-            <textarea
-              value={reportContent}
-              onChange={(e) => setReportContent(e.target.value)}
-              placeholder="Log today's covered material, topics discussed, and notes..."
-              className="w-full min-h-[100px] px-4 py-3 rounded-lg border border-slate-300 text-sm text-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-y"
-            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-1.5">
+                  Session Content
+                </label>
+                <textarea
+                  value={sessionContent}
+                  onChange={(e) => setSessionContent(e.target.value)}
+                  placeholder="Write what was covered and explained in today's session..."
+                  className="w-full min-h-[110px] px-4 py-3 rounded-lg border border-slate-300 text-sm text-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-y"
+                />
+              </div>
 
-            <div className="flex items-center justify-between mt-3 gap-2 flex-wrap">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-1.5">
+                  Session Homework
+                </label>
+                <textarea
+                  value={sessionHomework}
+                  onChange={(e) => setSessionHomework(e.target.value)}
+                  placeholder="Write the homework assigned to students for this session..."
+                  className="w-full min-h-[110px] px-4 py-3 rounded-lg border border-slate-300 text-sm text-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-y"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Session Material (Video Link)
+                </label>
+                {isValidHttpUrl(sessionMaterial) && (
+                  <a
+                    href={sessionMaterial.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    <span>Open Video</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </div>
+              <input
+                type="url"
+                value={sessionMaterial}
+                onChange={(e) => setSessionMaterial(e.target.value)}
+                placeholder="Paste session video link (e.g., https://youtube.com/... or https://drive.google.com/...)"
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-between mt-4 gap-2 flex-wrap">
               <div className="flex items-center gap-2 flex-wrap">
                 {saveMsg && (
                   <span
