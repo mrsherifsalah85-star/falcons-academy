@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   MessageSquare,
   ExternalLink,
+  Users,
 } from 'lucide-react';
 
 const READING_OPTIONS = ['Good', 'Needs Practice', 'Needs Study More'];
@@ -25,27 +26,42 @@ const HOMEWORK_OPTIONS = ['Done Well', 'Careless', 'Not Done'];
 const BEHAVIOR_OPTIONS = ['Committed', 'Disruptive'];
 
 type BuiltinShareKey = 'quiz' | 'dictation' | 'reading' | 'homework' | 'behavior';
+type FieldMode = 'alerts' | 'all';
+
+interface GroupWithTeacher extends Group {
+  teacher_id?: string | null;
+}
 
 interface ExtendedSessionReport extends SessionReport {
   session_homework?: string | null;
   session_material?: string | null;
 }
 
-interface ShareTogglesState {
-  quiz: boolean;
-  dictation: boolean;
-  reading: boolean;
-  homework: boolean;
-  behavior: boolean;
-  custom: Record<string, boolean>;
+interface FieldShareConfig {
+  enabled: boolean;
+  mode: FieldMode;
 }
 
-const DEFAULT_SHARE_TOGGLES: ShareTogglesState = {
-  quiz: true,
-  dictation: true,
-  reading: true,
-  homework: true,
-  behavior: true,
+interface ShareConfigState {
+  quiz: FieldShareConfig;
+  dictation: FieldShareConfig;
+  reading: FieldShareConfig;
+  homework: FieldShareConfig;
+  behavior: FieldShareConfig;
+  custom: Record<string, FieldShareConfig>;
+}
+
+const DEFAULT_FIELD_CONFIG: FieldShareConfig = {
+  enabled: true,
+  mode: 'alerts',
+};
+
+const DEFAULT_SHARE_CONFIG: ShareConfigState = {
+  quiz: { ...DEFAULT_FIELD_CONFIG },
+  dictation: { ...DEFAULT_FIELD_CONFIG },
+  reading: { ...DEFAULT_FIELD_CONFIG },
+  homework: { ...DEFAULT_FIELD_CONFIG },
+  behavior: { ...DEFAULT_FIELD_CONFIG },
   custom: {},
 };
 
@@ -78,35 +94,60 @@ function isValidHttpUrl(raw: string): boolean {
   }
 }
 
-function ShareToggleButton({
-  active,
-  onToggle,
+function ColumnShareControls({
+  config,
+  onToggleEnabled,
+  onToggleMode,
   label,
 }: {
-  active: boolean;
-  onToggle: () => void;
+  config: FieldShareConfig;
+  onToggleEnabled: () => void;
+  onToggleMode: () => void;
   label: string;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      title={active ? `Include ${label} in WhatsApp report` : `Exclude ${label} from WhatsApp report`}
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
-        active
-          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-          : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200/70 line-through'
-      }`}
-    >
-      <MessageSquare className="w-2.5 h-2.5" />
-      <span>{active ? 'WA ON' : 'WA OFF'}</span>
-    </button>
+    <div className="flex items-center justify-center gap-1 flex-wrap mt-1">
+      <button
+        type="button"
+        onClick={onToggleEnabled}
+        title={config.enabled ? `Exclude ${label} from WhatsApp` : `Include ${label} in WhatsApp`}
+        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
+          config.enabled
+            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+            : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200/70 line-through'
+        }`}
+      >
+        <MessageSquare className="w-2.5 h-2.5" />
+        <span>{config.enabled ? 'WA ON' : 'WA OFF'}</span>
+      </button>
+
+      {config.enabled && (
+        <button
+          type="button"
+          onClick={onToggleMode}
+          title={
+            config.mode === 'all'
+              ? `Showing all students for ${label} (click for alerts only)`
+              : `Showing alerts only for ${label} (click for all students)`
+          }
+          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
+            config.mode === 'all'
+              ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+              : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+          }`}
+        >
+          <Users className="w-2.5 h-2.5" />
+          <span>{config.mode === 'all' ? 'All' : 'Alerts'}</span>
+        </button>
+      )}
+    </div>
   );
 }
 
 export function TeacherWorkspace() {
   const { profile } = useAuth();
-  const [groups, setGroups] = useState<Group[]>([]);
+  const [groups, setGroups] = useState<GroupWithTeacher[]>([]);
+  const [teacherNamesMap, setTeacherNamesMap] = useState<Record<string, string>>({});
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [students, setStudents] = useState<Student[]>([]);
   const [sessionReports, setSessionReports] = useState<ExtendedSessionReport[]>([]);
@@ -122,7 +163,7 @@ export function TeacherWorkspace() {
   const [dictationMaxScore, setDictationMaxScore] = useState(10);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
-  const [shareToggles, setShareToggles] = useState<ShareTogglesState>(DEFAULT_SHARE_TOGGLES);
+  const [shareConfig, setShareConfig] = useState<ShareConfigState>(DEFAULT_SHARE_CONFIG);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -139,22 +180,73 @@ export function TeacherWorkspace() {
   const [whatsappSaving, setWhatsappSaving] = useState(false);
   const [whatsappMsg, setWhatsappMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const isTeacher = profile?.role === 'teacher';
-
   const loadGroups = useCallback(async () => {
+    if (!profile?.id) {
+      setGroups([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
-    let query = supabase.from('groups').select('*');
-    if (isTeacher && profile?.id) {
-      query = query.eq('teacher_id', profile.id);
+    try {
+      let allowedGroupIds: string[] | null = null;
+
+      if (profile.role === 'assistant') {
+        const { data: assignedRows, error: assignError } = await supabase
+          .from('assistant_groups')
+          .select('group_id')
+          .eq('assistant_id', profile.id);
+        if (assignError) throw assignError;
+
+        allowedGroupIds = (assignedRows || []).map((row) => String(row.group_id));
+        if (allowedGroupIds.length === 0) {
+          setGroups([]);
+          setLoading(false);
+          return;
+        }
+      }
+
+      let query = supabase.from('groups').select('*');
+      if (profile.role === 'teacher') {
+        query = query.eq('teacher_id', profile.id);
+      } else if (allowedGroupIds !== null) {
+        query = query.in('id', allowedGroupIds);
+      }
+
+      const { data, error } = await query.order('name');
+      if (error) throw error;
+
+      const loadedGroups = (data as GroupWithTeacher[]) || [];
+      setGroups(loadedGroups);
+
+      const teacherIds = Array.from(
+        new Set(
+          loadedGroups
+            .map((g) => g.teacher_id)
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        )
+      );
+
+      if (teacherIds.length > 0) {
+        const { data: teachersData } = await supabase
+          .from('profiles')
+          .select('id, display_name')
+          .in('id', teacherIds);
+
+        const nextMap: Record<string, string> = {};
+        for (const t of teachersData || []) {
+          if (t.id) {
+            nextMap[String(t.id)] = t.display_name || 'Teacher';
+          }
+        }
+        setTeacherNamesMap(nextMap);
+      }
+    } catch (err) {
+      setSaveMsg({ type: 'error', text: extractErrorMessage(err, 'Failed to load groups') });
+    } finally {
+      setLoading(false);
     }
-    const { data, error } = await query.order('name');
-    if (error) {
-      setSaveMsg({ type: 'error', text: extractErrorMessage(error, 'Failed to load groups') });
-    } else {
-      setGroups((data as Group[]) || []);
-    }
-    setLoading(false);
-  }, [isTeacher, profile]);
+  }, [profile]);
 
   useEffect(() => {
     loadGroups();
@@ -195,10 +287,10 @@ export function TeacherWorkspace() {
       .then(({ data }) => {
         const cols = (data as CustomColumn[]) || [];
         setCustomColumns(cols);
-        setShareToggles((prev) => {
-          const nextCustom: Record<string, boolean> = {};
+        setShareConfig((prev) => {
+          const nextCustom: Record<string, FieldShareConfig> = {};
           for (const col of cols) {
-            nextCustom[col.id] = prev.custom[col.id] ?? true;
+            nextCustom[col.id] = prev.custom[col.id] ?? { ...DEFAULT_FIELD_CONFIG };
           }
           return { ...prev, custom: nextCustom };
         });
@@ -256,21 +348,47 @@ export function TeacherWorkspace() {
     }
   }, [selectedReport]);
 
-  const toggleBuiltinShare = (key: BuiltinShareKey) => {
-    setShareToggles((prev) => ({
+  const toggleBuiltinEnabled = (key: BuiltinShareKey) => {
+    setShareConfig((prev) => ({
       ...prev,
-      [key]: !prev[key],
+      [key]: { ...prev[key], enabled: !prev[key].enabled },
     }));
   };
 
-  const toggleCustomShare = (colId: string) => {
-    setShareToggles((prev) => ({
+  const toggleBuiltinMode = (key: BuiltinShareKey) => {
+    setShareConfig((prev) => ({
       ...prev,
-      custom: {
-        ...prev.custom,
-        [colId]: !(prev.custom[colId] ?? true),
+      [key]: {
+        ...prev[key],
+        mode: prev[key].mode === 'alerts' ? 'all' : 'alerts',
       },
     }));
+  };
+
+  const toggleCustomEnabled = (colId: string) => {
+    setShareConfig((prev) => {
+      const current = prev.custom[colId] ?? { ...DEFAULT_FIELD_CONFIG };
+      return {
+        ...prev,
+        custom: {
+          ...prev.custom,
+          [colId]: { ...current, enabled: !current.enabled },
+        },
+      };
+    });
+  };
+
+  const toggleCustomMode = (colId: string) => {
+    setShareConfig((prev) => {
+      const current = prev.custom[colId] ?? { ...DEFAULT_FIELD_CONFIG };
+      return {
+        ...prev,
+        custom: {
+          ...prev.custom,
+          [colId]: { ...current, mode: current.mode === 'alerts' ? 'all' : 'alerts' },
+        },
+      };
+    });
   };
 
   const handleSaveReport = async () => {
@@ -287,6 +405,9 @@ export function TeacherWorkspace() {
     setSaveMsg(null);
 
     try {
+      const currentGroup = groups.find((g) => g.id === selectedGroupId);
+      const effectiveTeacherId = currentGroup?.teacher_id || profile.id;
+
       let reportId: string;
       const sessionPayload = {
         content: sessionContent,
@@ -313,7 +434,7 @@ export function TeacherWorkspace() {
           .from('sessions')
           .insert({
             group_id: selectedGroupId,
-            teacher_id: profile.id,
+            teacher_id: effectiveTeacherId,
             ...sessionPayload,
           })
           .select()
@@ -510,9 +631,9 @@ export function TeacherWorkspace() {
     }
     const created = data as CustomColumn;
     setCustomColumns([...customColumns, created]);
-    setShareToggles((prev) => ({
+    setShareConfig((prev) => ({
       ...prev,
-      custom: { ...prev.custom, [created.id]: true },
+      custom: { ...prev.custom, [created.id]: { ...DEFAULT_FIELD_CONFIG } },
     }));
     setShowAddColumn(false);
     setNewColumnName('');
@@ -527,7 +648,7 @@ export function TeacherWorkspace() {
       return;
     }
     setCustomColumns(customColumns.filter((c) => c.id !== colId));
-    setShareToggles((prev) => {
+    setShareConfig((prev) => {
       const nextCustom = { ...prev.custom };
       delete nextCustom[colId];
       return { ...prev, custom: nextCustom };
@@ -565,13 +686,17 @@ export function TeacherWorkspace() {
     }
   };
 
-  const formatNameList = (names: string[]): string => names.map((n) => `• ${n}`).join('\n');
+  const formatBulletLines = (lines: string[]): string => lines.map((line) => `• ${line}`).join('\n');
 
   const handleSendWhatsapp = () => {
     if (!selectedReport) return;
-    const group = groups.find((g) => g.id === selectedGroupId);
-    const groupName = group?.name ?? 'Unknown Group';
-    const teacherName = profile?.display_name ?? 'Teacher';
+    const selectedGroup = groups.find((g) => g.id === selectedGroupId);
+    const groupName = selectedGroup?.name ?? 'Unknown Group';
+    const teacherName =
+      (selectedGroup?.teacher_id && teacherNamesMap[selectedGroup.teacher_id]) ||
+      profile?.display_name ||
+      'Teacher';
+
     const dateStr = new Date(selectedReport.report_date).toLocaleDateString('ar-EG', {
       weekday: 'long',
       year: 'numeric',
@@ -584,103 +709,183 @@ export function TeacherWorkspace() {
 
     const sections: string[] = [];
 
-    if (shareToggles.quiz) {
-      const lowQuizStudents = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          if (ev?.quiz_score === null || ev?.quiz_score === undefined) return false;
-          const score = Number(ev.quiz_score);
-          if (Number.isNaN(score)) return false;
-          return (score / maxQuiz) * 100 < 70;
-        })
-        .map((s) => s.name);
+    if (shareConfig.quiz.enabled) {
+      if (shareConfig.quiz.mode === 'all') {
+        const allQuizLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (ev?.quiz_score === null || ev?.quiz_score === undefined) return null;
+            const score = Number(ev.quiz_score);
+            if (Number.isNaN(score)) return null;
+            return `${s.name} (${score}/${maxQuiz})`;
+          })
+          .filter((item): item is string => Boolean(item));
 
-      if (lowQuizStudents.length > 0) {
-        sections.push(
-          `*يحتاجون متابعة في الكويز (أقل من 70%):*\n${formatNameList(lowQuizStudents)}`
-        );
+        if (allQuizLines.length > 0) {
+          sections.push(`*نتائج الكويز (جميع الطلاب):*\n${formatBulletLines(allQuizLines)}`);
+        }
+      } else {
+        const lowQuizNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (ev?.quiz_score === null || ev?.quiz_score === undefined) return false;
+            const score = Number(ev.quiz_score);
+            if (Number.isNaN(score)) return false;
+            return (score / maxQuiz) * 100 < 70;
+          })
+          .map((s) => s.name);
+
+        if (lowQuizNames.length > 0) {
+          sections.push(
+            `*يحتاجون متابعة في الكويز (أقل من 70%):*\n${formatBulletLines(lowQuizNames)}`
+          );
+        }
       }
     }
 
-    if (shareToggles.dictation) {
-      const lowDictationStudents = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          if (ev?.dictation === null || ev?.dictation === undefined) return false;
-          const score = Number(ev.dictation);
-          if (Number.isNaN(score)) return false;
-          return (score / maxDictation) * 100 < 70;
-        })
-        .map((s) => s.name);
+    if (shareConfig.dictation.enabled) {
+      if (shareConfig.dictation.mode === 'all') {
+        const allDictationLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (ev?.dictation === null || ev?.dictation === undefined) return null;
+            const score = Number(ev.dictation);
+            if (Number.isNaN(score)) return null;
+            return `${s.name} (${score}/${maxDictation})`;
+          })
+          .filter((item): item is string => Boolean(item));
 
-      if (lowDictationStudents.length > 0) {
-        sections.push(
-          `*يحتاجون متابعة في الإملاء (أقل من 70%):*\n${formatNameList(lowDictationStudents)}`
-        );
+        if (allDictationLines.length > 0) {
+          sections.push(`*نتائج الإملاء (جميع الطلاب):*\n${formatBulletLines(allDictationLines)}`);
+        }
+      } else {
+        const lowDictationNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (ev?.dictation === null || ev?.dictation === undefined) return false;
+            const score = Number(ev.dictation);
+            if (Number.isNaN(score)) return false;
+            return (score / maxDictation) * 100 < 70;
+          })
+          .map((s) => s.name);
+
+        if (lowDictationNames.length > 0) {
+          sections.push(
+            `*يحتاجون متابعة في الإملاء (أقل من 70%):*\n${formatBulletLines(lowDictationNames)}`
+          );
+        }
       }
     }
 
-    if (shareToggles.reading) {
-      const readingNeedsAttention = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          return ev?.reading === 'Needs Practice' || ev?.reading === 'Needs Study More';
-        })
-        .map((s) => s.name);
+    if (shareConfig.reading.enabled) {
+      if (shareConfig.reading.mode === 'all') {
+        const allReadingLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (!ev?.reading) return null;
+            return `${s.name} (${ev.reading})`;
+          })
+          .filter((item): item is string => Boolean(item));
 
-      if (readingNeedsAttention.length > 0) {
-        sections.push(
-          `*متابعة القراءة:*\n${formatNameList(readingNeedsAttention)}`
-        );
+        if (allReadingLines.length > 0) {
+          sections.push(`*القراءة (جميع الطلاب):*\n${formatBulletLines(allReadingLines)}`);
+        }
+      } else {
+        const readingAlertNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            return ev?.reading === 'Needs Practice' || ev?.reading === 'Needs Study More';
+          })
+          .map((s) => s.name);
+
+        if (readingAlertNames.length > 0) {
+          sections.push(`*متابعة القراءة:*\n${formatBulletLines(readingAlertNames)}`);
+        }
       }
     }
 
-    if (shareToggles.homework) {
-      const homeworkNeedsAttention = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          return ev?.homework === 'Careless' || ev?.homework === 'Not Done';
-        })
-        .map((s) => s.name);
+    if (shareConfig.homework.enabled) {
+      if (shareConfig.homework.mode === 'all') {
+        const allHomeworkLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            if (!ev?.homework) return null;
+            return `${s.name} (${ev.homework})`;
+          })
+          .filter((item): item is string => Boolean(item));
 
-      if (homeworkNeedsAttention.length > 0) {
-        sections.push(
-          `*متابعة الواجب:*\n${formatNameList(homeworkNeedsAttention)}`
-        );
+        if (allHomeworkLines.length > 0) {
+          sections.push(`*الواجب (جميع الطلاب):*\n${formatBulletLines(allHomeworkLines)}`);
+        }
+      } else {
+        const homeworkAlertNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            return ev?.homework === 'Careless' || ev?.homework === 'Not Done';
+          })
+          .map((s) => s.name);
+
+        if (homeworkAlertNames.length > 0) {
+          sections.push(`*متابعة الواجب:*\n${formatBulletLines(homeworkAlertNames)}`);
+        }
       }
     }
 
-    if (shareToggles.behavior) {
-      const disruptiveStudents = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          return ev?.behavior === 'Disruptive';
-        })
-        .map((s) => s.name);
+    if (shareConfig.behavior.enabled) {
+      if (shareConfig.behavior.mode === 'all') {
+        const allBehaviorLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            const beh = ev?.behavior || 'Committed';
+            return `${s.name} (${beh})`;
+          });
 
-      if (disruptiveStudents.length > 0) {
-        sections.push(
-          `*ملاحظات السلوك:*\n${formatNameList(disruptiveStudents)}`
-        );
+        if (allBehaviorLines.length > 0) {
+          sections.push(`*السلوك (جميع الطلاب):*\n${formatBulletLines(allBehaviorLines)}`);
+        }
+      } else {
+        const disruptiveNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            return ev?.behavior === 'Disruptive';
+          })
+          .map((s) => s.name);
+
+        if (disruptiveNames.length > 0) {
+          sections.push(`*ملاحظات السلوك:*\n${formatBulletLines(disruptiveNames)}`);
+        }
       }
     }
 
     for (const col of customColumns) {
-      const isEnabled = shareToggles.custom[col.id] ?? true;
-      if (!isEnabled) continue;
+      const cfg = shareConfig.custom[col.id] ?? { ...DEFAULT_FIELD_CONFIG };
+      if (!cfg.enabled) continue;
 
-      const flaggedStudents = students
-        .filter((s) => {
-          const ev = evaluations.find((e) => e.student_id === s.id);
-          const val = ev?.custom_data?.[col.id];
-          return val !== null && val !== undefined && String(val).trim() !== '';
-        })
-        .map((s) => s.name);
+      if (cfg.mode === 'all') {
+        const allCustomLines = students
+          .map((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            const val = ev?.custom_data?.[col.id];
+            if (val === null || val === undefined || String(val).trim() === '') return null;
+            return `${s.name} (${String(val).trim()})`;
+          })
+          .filter((item): item is string => Boolean(item));
 
-      if (flaggedStudents.length > 0) {
-        sections.push(
-          `*${col.name}:*\n${formatNameList(flaggedStudents)}`
-        );
+        if (allCustomLines.length > 0) {
+          sections.push(`*${col.name} (جميع الطلاب):*\n${formatBulletLines(allCustomLines)}`);
+        }
+      } else {
+        const alertCustomNames = students
+          .filter((s) => {
+            const ev = evaluations.find((e) => e.student_id === s.id);
+            const val = ev?.custom_data?.[col.id];
+            return val !== null && val !== undefined && String(val).trim() !== '';
+          })
+          .map((s) => s.name);
+
+        if (alertCustomNames.length > 0) {
+          sections.push(`*${col.name}:*\n${formatBulletLines(alertCustomNames)}`);
+        }
       }
     }
 
@@ -1048,81 +1253,75 @@ ${followUpSection}
                       <th className="text-left px-4 py-3 font-semibold text-slate-700 sticky left-0 bg-slate-50 z-10 min-w-[140px]">
                         Student
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[110px]">
-                        <div className="flex flex-col items-center gap-1">
-                          <div>
-                            Quiz<span className="text-slate-400 font-normal">/{quizMaxScore}</span>
-                          </div>
-                          <ShareToggleButton
-                            active={shareToggles.quiz}
-                            onToggle={() => toggleBuiltinShare('quiz')}
-                            label="Quiz"
-                          />
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[130px]">
+                        <div>
+                          Quiz<span className="text-slate-400 font-normal">/{quizMaxScore}</span>
                         </div>
+                        <ColumnShareControls
+                          config={shareConfig.quiz}
+                          onToggleEnabled={() => toggleBuiltinEnabled('quiz')}
+                          onToggleMode={() => toggleBuiltinMode('quiz')}
+                          label="Quiz"
+                        />
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[110px]">
-                        <div className="flex flex-col items-center gap-1">
-                          <div>
-                            Dictation<span className="text-slate-400 font-normal">/{dictationMaxScore}</span>
-                          </div>
-                          <ShareToggleButton
-                            active={shareToggles.dictation}
-                            onToggle={() => toggleBuiltinShare('dictation')}
-                            label="Dictation"
-                          />
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[130px]">
+                        <div>
+                          Dictation<span className="text-slate-400 font-normal">/{dictationMaxScore}</span>
                         </div>
+                        <ColumnShareControls
+                          config={shareConfig.dictation}
+                          onToggleEnabled={() => toggleBuiltinEnabled('dictation')}
+                          onToggleMode={() => toggleBuiltinMode('dictation')}
+                          label="Dictation"
+                        />
                       </th>
                       <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[140px]">
-                        <div className="flex flex-col items-center gap-1">
-                          <span>Reading</span>
-                          <ShareToggleButton
-                            active={shareToggles.reading}
-                            onToggle={() => toggleBuiltinShare('reading')}
-                            label="Reading"
-                          />
-                        </div>
+                        <span>Reading</span>
+                        <ColumnShareControls
+                          config={shareConfig.reading}
+                          onToggleEnabled={() => toggleBuiltinEnabled('reading')}
+                          onToggleMode={() => toggleBuiltinMode('reading')}
+                          label="Reading"
+                        />
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[120px]">
-                        <div className="flex flex-col items-center gap-1">
-                          <span>Homework</span>
-                          <ShareToggleButton
-                            active={shareToggles.homework}
-                            onToggle={() => toggleBuiltinShare('homework')}
-                            label="Homework"
-                          />
-                        </div>
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[130px]">
+                        <span>Homework</span>
+                        <ColumnShareControls
+                          config={shareConfig.homework}
+                          onToggleEnabled={() => toggleBuiltinEnabled('homework')}
+                          onToggleMode={() => toggleBuiltinMode('homework')}
+                          label="Homework"
+                        />
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[120px]">
-                        <div className="flex flex-col items-center gap-1">
-                          <span>Behavior</span>
-                          <ShareToggleButton
-                            active={shareToggles.behavior}
-                            onToggle={() => toggleBuiltinShare('behavior')}
-                            label="Behavior"
-                          />
-                        </div>
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[130px]">
+                        <span>Behavior</span>
+                        <ColumnShareControls
+                          config={shareConfig.behavior}
+                          onToggleEnabled={() => toggleBuiltinEnabled('behavior')}
+                          onToggleMode={() => toggleBuiltinMode('behavior')}
+                          label="Behavior"
+                        />
                       </th>
                       {customColumns.map((col) => (
                         <th
                           key={col.id}
-                          className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[125px]"
+                          className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[135px]"
                         >
-                          <div className="flex flex-col items-center gap-1">
-                            <div className="flex items-center justify-center gap-1">
-                              <span>{col.name}</span>
-                              <button
-                                onClick={() => handleDeleteCustomColumn(col.id)}
-                                className="text-slate-300 hover:text-red-500"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            <ShareToggleButton
-                              active={shareToggles.custom[col.id] ?? true}
-                              onToggle={() => toggleCustomShare(col.id)}
-                              label={col.name}
-                            />
+                          <div className="flex items-center justify-center gap-1">
+                            <span>{col.name}</span>
+                            <button
+                              onClick={() => handleDeleteCustomColumn(col.id)}
+                              className="text-slate-300 hover:text-red-500"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
                           </div>
+                          <ColumnShareControls
+                            config={shareConfig.custom[col.id] ?? { ...DEFAULT_FIELD_CONFIG }}
+                            onToggleEnabled={() => toggleCustomEnabled(col.id)}
+                            onToggleMode={() => toggleCustomMode(col.id)}
+                            label={col.name}
+                          />
                         </th>
                       ))}
                       <th className="px-2 py-3 w-10" />
