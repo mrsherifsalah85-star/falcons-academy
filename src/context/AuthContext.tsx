@@ -23,73 +23,82 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
-    const blockUnauthorized = async (_userId?: string) => {
-      await supabase.auth.signOut();
-      if (mounted) {
-        setProfile(null);
-        setLoading(false);
-      }
-    };
-
     const loadProfile = async (userId: string, userEmail?: string) => {
-      let role: Role = 'teacher';
-      let name = '';
-
       if (!userEmail) {
-        await blockUnauthorized(userId);
+        alert('Auth debug: no email on session');
+        await supabase.auth.signOut();
+        if (mounted) {
+          setProfile(null);
+          setLoading(false);
+        }
         return;
       }
 
+      const normalizedEmail = userEmail.trim().toLowerCase();
       const { data: allowed, error: allowedError } = await supabase
         .from('authorized_users')
         .select('role, name, is_active')
-        .eq('email', userEmail.toLowerCase())
-        .maybeSingle();
-
-      if (allowedError || !allowed || !allowed.is_active) {
-        await blockUnauthorized(userId);
-        return;
-      }
-
-      role = allowed.role as Role;
-      name = allowed.name || '';
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
+        .eq('email', normalizedEmail)
         .maybeSingle();
 
       if (!mounted) return;
 
-      // Fallback profile if `profiles` table API is disabled or returns no row
-      const fallbackProfile: Profile = {
-        id: userId,
-        email: userEmail,
-        role,
-        display_name: name || userEmail.split('@')[0],
-        permissions: {},
-      } as Profile;
-
-      if (error || !data) {
-        setProfile(fallbackProfile);
+      if (allowedError || !allowed || !allowed.is_active) {
+        alert(
+          `Auth check failed for ${normalizedEmail}: ` +
+            (allowedError ? allowedError.message : !allowed ? 'row not found in authorized_users' : 'is_active is false')
+        );
+        await supabase.auth.signOut();
+        setProfile(null);
         setLoading(false);
         return;
       }
 
-      setProfile({
-        ...fallbackProfile,
-        ...(data as Profile),
+      const role = (allowed.role as Role) || 'super_admin';
+      const displayName = allowed.name || normalizedEmail.split('@')[0];
+
+      const fallbackProfile: Profile = {
+        id: userId,
+        email: normalizedEmail,
         role,
-        display_name: name || (data as Profile).display_name || fallbackProfile.display_name,
-        permissions: (data as Profile).permissions || {},
-      });
-      setLoading(false);
+        display_name: displayName,
+        permissions: {},
+      } as Profile;
+
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (!mounted) return;
+
+        if (error || !data) {
+          setProfile(fallbackProfile);
+        } else {
+          setProfile({
+            ...fallbackProfile,
+            ...(data as Profile),
+            role,
+            display_name: allowed.name || (data as Profile).display_name || displayName,
+            permissions: (data as Profile).permissions || {},
+          });
+        }
+      } catch {
+        if (mounted) {
+          setProfile(fallbackProfile);
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
     };
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!mounted) return;
-      if (session) {
+      if (session?.user) {
         loadProfile(session.user.id, session.user.email ?? undefined);
       } else {
         setLoading(false);
@@ -97,14 +106,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
-        if (session) {
-          await loadProfile(session.user.id, session.user.email ?? undefined);
-        } else {
-          if (mounted) setProfile(null);
-          setLoading(false);
-        }
-      })();
+      if (!mounted) return;
+      if (session?.user) {
+        loadProfile(session.user.id, session.user.email ?? undefined);
+      } else {
+        setProfile(null);
+        setLoading(false);
+      }
     });
 
     return () => {
