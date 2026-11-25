@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import type { Profile, AuthorizedUser } from '@/types';
@@ -67,7 +66,7 @@ function splitCsvLine(line: string, delimiter: string): string[] {
   return result;
 }
 
-function rowsToStaffList(matrix: unknown[][]): ParsedStaffRow[] {
+function rowsToStaffList(matrix: string[][]): ParsedStaffRow[] {
   if (!matrix.length) return [];
 
   const nonEmptyRows = matrix.filter((r) =>
@@ -114,27 +113,15 @@ function rowsToStaffList(matrix: unknown[][]): ParsedStaffRow[] {
   return Array.from(deduped.values());
 }
 
-async function parseSpreadsheetFile(file: File): Promise<ParsedStaffRow[]> {
-  const fileName = file.name.toLowerCase();
-
-  if (fileName.endsWith('.csv')) {
-    const text = await file.text();
-    const lines = text
-      .replace(/^\uFEFF/, '')
-      .split(/\r?\n/)
-      .filter((l) => l.trim().length > 0);
-    if (!lines.length) return [];
-    const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
-    const matrix = lines.map((line) => splitCsvLine(line, delimiter));
-    return rowsToStaffList(matrix);
-  }
-
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array' });
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) return [];
-  const worksheet = workbook.Sheets[firstSheetName];
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '' });
+async function parseCsvFile(file: File): Promise<ParsedStaffRow[]> {
+  const text = await file.text();
+  const lines = text
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0);
+  if (!lines.length) return [];
+  const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
+  const matrix = lines.map((line) => splitCsvLine(line, delimiter));
   return rowsToStaffList(matrix);
 }
 
@@ -152,7 +139,7 @@ export function ManageStaff() {
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Bulk file import state
+  // Bulk CSV import state
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [importedFileName, setImportedFileName] = useState('');
   const [importedRows, setImportedRows] = useState<ParsedStaffRow[]>([]);
@@ -205,19 +192,25 @@ export function ManageStaff() {
       return;
     }
 
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setImportedRows([]);
+      setSaveError('Please upload a .csv file (you can export any Excel sheet as CSV via File > Save As > CSV).');
+      return;
+    }
+
     setParsingFile(true);
     setImportedFileName(file.name);
     try {
-      const parsed = await parseSpreadsheetFile(file);
+      const parsed = await parseCsvFile(file);
       if (parsed.length === 0) {
         setImportedRows([]);
-        setSaveError('No valid email rows found in the file. Make sure there is an email column.');
+        setSaveError('No valid email rows found in the CSV file.');
       } else {
         setImportedRows(parsed);
       }
     } catch (err) {
       setImportedRows([]);
-      setSaveError(err instanceof Error ? err.message : 'Failed to read spreadsheet file');
+      setSaveError(err instanceof Error ? err.message : 'Failed to read CSV file');
     } finally {
       setParsingFile(false);
     }
@@ -701,7 +694,7 @@ export function ManageStaff() {
                     }`}
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5" />
-                    Import Excel / CSV
+                    Import CSV
                   </button>
                 </div>
               )}
@@ -710,7 +703,7 @@ export function ManageStaff() {
                 <div className="space-y-4">
                   <div className="rounded-lg bg-blue-50 border border-blue-100 p-3 text-xs text-blue-900 space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">Upload CSV or Excel file (.csv, .xlsx, .xls)</span>
+                      <span className="font-semibold">Upload CSV file (.csv)</span>
                       <button
                         type="button"
                         onClick={handleDownloadSampleCsv}
@@ -729,7 +722,7 @@ export function ManageStaff() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".csv,.xlsx,.xls"
+                      accept=".csv,text/csv"
                       onChange={handleFileChange}
                       className="hidden"
                       id="staff-file-upload"
@@ -744,10 +737,10 @@ export function ManageStaff() {
                         <Upload className="w-6 h-6 text-blue-600" />
                       )}
                       <span className="text-sm font-medium text-slate-700">
-                        {importedFileName || 'Choose Excel or CSV file'}
+                        {importedFileName || 'Choose CSV file'}
                       </span>
                       <span className="text-xs text-slate-400">
-                        Click to select file from your device
+                        Click to select .csv file from your device
                       </span>
                     </label>
                   </div>
