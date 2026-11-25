@@ -16,11 +16,32 @@ import {
   Settings,
   Eraser,
   CheckCircle2,
+  MessageSquare,
 } from 'lucide-react';
 
 const READING_OPTIONS = ['Good', 'Needs Practice', 'Needs Study More'];
 const HOMEWORK_OPTIONS = ['Done Well', 'Careless', 'Not Done'];
 const BEHAVIOR_OPTIONS = ['Committed', 'Disruptive'];
+
+type BuiltinShareKey = 'quiz' | 'dictation' | 'reading' | 'homework' | 'behavior';
+
+interface ShareTogglesState {
+  quiz: boolean;
+  dictation: boolean;
+  reading: boolean;
+  homework: boolean;
+  behavior: boolean;
+  custom: Record<string, boolean>;
+}
+
+const DEFAULT_SHARE_TOGGLES: ShareTogglesState = {
+  quiz: true,
+  dictation: true,
+  reading: true,
+  homework: true,
+  behavior: true,
+  custom: {},
+};
 
 const PACE_OPTIONS: { value: SessionReport['pace']; label: string; color: string }[] = [
   { value: 'on_time', label: 'On Time', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
@@ -32,11 +53,38 @@ function extractErrorMessage(err: unknown, fallback = 'Failed to save'): string 
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === 'object' && err !== null) {
     const record = err as { message?: unknown; details?: unknown; hint?: unknown };
-    const parts = [record.message, record.details, record.hint]
-      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    const parts = [record.message, record.details, record.hint].filter(
+      (v): v is string => typeof v === 'string' && v.trim().length > 0
+    );
     if (parts.length > 0) return parts.join(' — ');
   }
   return fallback;
+}
+
+function ShareToggleButton({
+  active,
+  onToggle,
+  label,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={active ? `Include ${label} in WhatsApp report` : `Exclude ${label} from WhatsApp report`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
+        active
+          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+          : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200/70 line-through'
+      }`}
+    >
+      <MessageSquare className="w-2.5 h-2.5" />
+      <span>{active ? 'WA ON' : 'WA OFF'}</span>
+    </button>
+  );
 }
 
 export function TeacherWorkspace() {
@@ -53,6 +101,8 @@ export function TeacherWorkspace() {
   const [dictationMaxScore, setDictationMaxScore] = useState(10);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
+  const [shareToggles, setShareToggles] = useState<ShareTogglesState>(DEFAULT_SHARE_TOGGLES);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -121,7 +171,17 @@ export function TeacherWorkspace() {
       .select('*')
       .eq('group_id', selectedGroupId)
       .order('created_at')
-      .then(({ data }) => setCustomColumns((data as CustomColumn[]) || []));
+      .then(({ data }) => {
+        const cols = (data as CustomColumn[]) || [];
+        setCustomColumns(cols);
+        setShareToggles((prev) => {
+          const nextCustom: Record<string, boolean> = {};
+          for (const col of cols) {
+            nextCustom[col.id] = prev.custom[col.id] ?? true;
+          }
+          return { ...prev, custom: nextCustom };
+        });
+      });
 
     supabase
       .from('sessions')
@@ -170,6 +230,23 @@ export function TeacherWorkspace() {
       setDictationMaxScore(10);
     }
   }, [selectedReport]);
+
+  const toggleBuiltinShare = (key: BuiltinShareKey) => {
+    setShareToggles((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const toggleCustomShare = (colId: string) => {
+    setShareToggles((prev) => ({
+      ...prev,
+      custom: {
+        ...prev.custom,
+        [colId]: !(prev.custom[colId] ?? true),
+      },
+    }));
+  };
 
   const handleSaveReport = async () => {
     if (!selectedGroupId) {
@@ -405,7 +482,12 @@ export function TeacherWorkspace() {
       setSaveMsg({ type: 'error', text: extractErrorMessage(error, 'Failed to add column') });
       return;
     }
-    setCustomColumns([...customColumns, data as CustomColumn]);
+    const created = data as CustomColumn;
+    setCustomColumns([...customColumns, created]);
+    setShareToggles((prev) => ({
+      ...prev,
+      custom: { ...prev.custom, [created.id]: true },
+    }));
     setShowAddColumn(false);
     setNewColumnName('');
     setNewColumnType('text');
@@ -419,6 +501,11 @@ export function TeacherWorkspace() {
       return;
     }
     setCustomColumns(customColumns.filter((c) => c.id !== colId));
+    setShareToggles((prev) => {
+      const nextCustom = { ...prev.custom };
+      delete nextCustom[colId];
+      return { ...prev, custom: nextCustom };
+    });
     setEvaluations(
       evaluations.map((e) => {
         const newData = { ...e.custom_data };
@@ -452,11 +539,7 @@ export function TeacherWorkspace() {
     }
   };
 
-  const formatDictation = (value: string | number | null | undefined): string => {
-    if (value === null || value === undefined || value === '') return 'N/A';
-    const num = Number(value);
-    return Number.isNaN(num) ? String(value) : `${num}/${dictationMaxScore}`;
-  };
+  const formatNameList = (names: string[]): string => names.map((n) => `• ${n}`).join('\n');
 
   const handleSendWhatsapp = () => {
     if (!selectedReport) return;
@@ -470,31 +553,114 @@ export function TeacherWorkspace() {
       day: 'numeric',
     });
 
-    const studentLines = students
-      .map((student) => {
-        const ev = evaluations.find((e) => e.student_id === student.id);
-        const dictation = formatDictation(ev?.dictation);
-        const reading = ev?.reading ?? 'N/A';
-        const behavior = ev?.behavior ?? 'Committed';
-        const note = behavior === 'Disruptive' ? 'يحتاج تركيز' : 'مستوى جيد';
-        return `\u2022 *${student.name}*: الإملاء: ${dictation}، القراءة: ${reading} \u2014 *ملاحظات:* ${note}`;
-      })
-      .join('\n');
+    const maxQuiz = quizMaxScore > 0 ? quizMaxScore : 100;
+    const maxDictation = dictationMaxScore > 0 ? dictationMaxScore : 10;
 
-    const remarks = students
-      .filter((s) => {
-        const ev = evaluations.find((e) => e.student_id === s.id);
-        return ev?.behavior === 'Disruptive' || ev?.homework === 'Not Done';
-      })
-      .map((s) => {
-        const ev = evaluations.find((e) => e.student_id === s.id);
-        const issues: string[] = [];
-        if (ev?.behavior === 'Disruptive') issues.push('سلوك يحتاج ضبط');
-        if (ev?.homework === 'Not Done') issues.push('الواجب غير منجز');
-        return `\u2022 ${s.name}: ${issues.join('، ')}`;
-      });
+    const sections: string[] = [];
 
-    const remarksSection = remarks.length > 0 ? remarks.join('\n') : 'لا توجد ملاحظات خاصة لهذه الجلسة.';
+    if (shareToggles.quiz) {
+      const lowQuizStudents = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          if (ev?.quiz_score === null || ev?.quiz_score === undefined) return false;
+          const score = Number(ev.quiz_score);
+          if (Number.isNaN(score)) return false;
+          return (score / maxQuiz) * 100 < 70;
+        })
+        .map((s) => s.name);
+
+      if (lowQuizStudents.length > 0) {
+        sections.push(
+          `*يحتاجون متابعة في الكويز (أقل من 70%):*\n${formatNameList(lowQuizStudents)}`
+        );
+      }
+    }
+
+    if (shareToggles.dictation) {
+      const lowDictationStudents = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          if (ev?.dictation === null || ev?.dictation === undefined) return false;
+          const score = Number(ev.dictation);
+          if (Number.isNaN(score)) return false;
+          return (score / maxDictation) * 100 < 70;
+        })
+        .map((s) => s.name);
+
+      if (lowDictationStudents.length > 0) {
+        sections.push(
+          `*يحتاجون متابعة في الإملاء (أقل من 70%):*\n${formatNameList(lowDictationStudents)}`
+        );
+      }
+    }
+
+    if (shareToggles.reading) {
+      const readingNeedsAttention = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          return ev?.reading === 'Needs Practice' || ev?.reading === 'Needs Study More';
+        })
+        .map((s) => s.name);
+
+      if (readingNeedsAttention.length > 0) {
+        sections.push(
+          `*متابعة القراءة:*\n${formatNameList(readingNeedsAttention)}`
+        );
+      }
+    }
+
+    if (shareToggles.homework) {
+      const homeworkNeedsAttention = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          return ev?.homework === 'Careless' || ev?.homework === 'Not Done';
+        })
+        .map((s) => s.name);
+
+      if (homeworkNeedsAttention.length > 0) {
+        sections.push(
+          `*متابعة الواجب:*\n${formatNameList(homeworkNeedsAttention)}`
+        );
+      }
+    }
+
+    if (shareToggles.behavior) {
+      const disruptiveStudents = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          return ev?.behavior === 'Disruptive';
+        })
+        .map((s) => s.name);
+
+      if (disruptiveStudents.length > 0) {
+        sections.push(
+          `*ملاحظات السلوك:*\n${formatNameList(disruptiveStudents)}`
+        );
+      }
+    }
+
+    for (const col of customColumns) {
+      const isEnabled = shareToggles.custom[col.id] ?? true;
+      if (!isEnabled) continue;
+
+      const flaggedStudents = students
+        .filter((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          const val = ev?.custom_data?.[col.id];
+          return val !== null && val !== undefined && String(val).trim() !== '';
+        })
+        .map((s) => s.name);
+
+      if (flaggedStudents.length > 0) {
+        sections.push(
+          `*${col.name}:*\n${formatNameList(flaggedStudents)}`
+        );
+      }
+    }
+
+    const followUpSection =
+      sections.length > 0 ? sections.join('\n\n') : 'لا توجد ملاحظات أو حالات متابعة خاصة لهذه الجلسة.';
+
     const topics = selectedReport.content?.trim() || 'لم يتم تسجيل الدروس لهذه الجلسة.';
 
     const message =
@@ -504,10 +670,8 @@ export function TeacherWorkspace() {
 \u{1F468}\u200D\u{1F3EB} *المدرس:* ${teacherName}
 \u{1F4DD} *الدروس التي تم شرحها:*
 ${topics}
-\u{1F4CA} *تقييم وأداء الطلاب:*
-${studentLines || 'لا يوجد تقييمات مسجلة للطلاب.'}
-\u26A0\uFE0F *ملاحظات هامة / تنبيهات:*
-${remarksSection}
+\u26A0\uFE0F *متابعة وتنبيهات الطلاب:*
+${followUpSection}
 شكراً لمتابعتكم المستمرة معنا! \u{1F31F}`;
 
     const encoded = encodeURIComponent(message);
@@ -803,34 +967,80 @@ ${remarksSection}
                       <th className="text-left px-4 py-3 font-semibold text-slate-700 sticky left-0 bg-slate-50 z-10 min-w-[140px]">
                         Student
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[100px]">
-                        Quiz<span className="text-slate-400 font-normal">/{quizMaxScore}</span>
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[110px]">
+                        <div className="flex flex-col items-center gap-1">
+                          <div>
+                            Quiz<span className="text-slate-400 font-normal">/{quizMaxScore}</span>
+                          </div>
+                          <ShareToggleButton
+                            active={shareToggles.quiz}
+                            onToggle={() => toggleBuiltinShare('quiz')}
+                            label="Quiz"
+                          />
+                        </div>
                       </th>
-                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[100px]">
-                        Dictation<span className="text-slate-400 font-normal">/{dictationMaxScore}</span>
+                      <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[110px]">
+                        <div className="flex flex-col items-center gap-1">
+                          <div>
+                            Dictation<span className="text-slate-400 font-normal">/{dictationMaxScore}</span>
+                          </div>
+                          <ShareToggleButton
+                            active={shareToggles.dictation}
+                            onToggle={() => toggleBuiltinShare('dictation')}
+                            label="Dictation"
+                          />
+                        </div>
                       </th>
                       <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[140px]">
-                        Reading
+                        <div className="flex flex-col items-center gap-1">
+                          <span>Reading</span>
+                          <ShareToggleButton
+                            active={shareToggles.reading}
+                            onToggle={() => toggleBuiltinShare('reading')}
+                            label="Reading"
+                          />
+                        </div>
                       </th>
                       <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[120px]">
-                        Homework
+                        <div className="flex flex-col items-center gap-1">
+                          <span>Homework</span>
+                          <ShareToggleButton
+                            active={shareToggles.homework}
+                            onToggle={() => toggleBuiltinShare('homework')}
+                            label="Homework"
+                          />
+                        </div>
                       </th>
                       <th className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[120px]">
-                        Behavior
+                        <div className="flex flex-col items-center gap-1">
+                          <span>Behavior</span>
+                          <ShareToggleButton
+                            active={shareToggles.behavior}
+                            onToggle={() => toggleBuiltinShare('behavior')}
+                            label="Behavior"
+                          />
+                        </div>
                       </th>
                       {customColumns.map((col) => (
                         <th
                           key={col.id}
-                          className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[120px]"
+                          className="text-center px-3 py-3 font-semibold text-slate-700 min-w-[125px]"
                         >
-                          <div className="flex items-center justify-center gap-1">
-                            {col.name}
-                            <button
-                              onClick={() => handleDeleteCustomColumn(col.id)}
-                              className="text-slate-300 hover:text-red-500"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center justify-center gap-1">
+                              <span>{col.name}</span>
+                              <button
+                                onClick={() => handleDeleteCustomColumn(col.id)}
+                                className="text-slate-300 hover:text-red-500"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <ShareToggleButton
+                              active={shareToggles.custom[col.id] ?? true}
+                              onToggle={() => toggleCustomShare(col.id)}
+                              label={col.name}
+                            />
                           </div>
                         </th>
                       ))}
