@@ -23,7 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
-    const blockUnauthorized = async (userId?: string) => {
+    const blockUnauthorized = async (_userId?: string) => {
       await supabase.auth.signOut();
       if (mounted) {
         setProfile(null);
@@ -31,8 +31,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    // The role always comes from authorized_users (matched case-insensitively),
-    // never from the profiles row, so the allowlist is the single source of truth.
     const loadProfile = async (userId: string, userEmail?: string) => {
       let role: Role = 'teacher';
       let name = '';
@@ -42,16 +40,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const { data: allowed } = await supabase
+      const { data: allowed, error: allowedError } = await supabase
         .from('authorized_users')
         .select('role, name, is_active')
         .eq('email', userEmail.toLowerCase())
         .maybeSingle();
 
-      if (!allowed || !allowed.is_active) {
+      if (allowedError || !allowed || !allowed.is_active) {
         await blockUnauthorized(userId);
         return;
       }
+
       role = allowed.role as Role;
       name = allowed.name || '';
 
@@ -62,14 +61,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .maybeSingle();
 
       if (!mounted) return;
+
+      // Fallback profile if `profiles` table API is disabled or returns no row
+      const fallbackProfile: Profile = {
+        id: userId,
+        email: userEmail,
+        role,
+        display_name: name || userEmail.split('@')[0],
+        permissions: {},
+      } as Profile;
+
       if (error || !data) {
+        setProfile(fallbackProfile);
         setLoading(false);
         return;
       }
+
       setProfile({
+        ...fallbackProfile,
         ...(data as Profile),
-        role: role,
-        display_name: name || (data as Profile).display_name,
+        role,
+        display_name: name || (data as Profile).display_name || fallbackProfile.display_name,
+        permissions: (data as Profile).permissions || {},
       });
       setLoading(false);
     };
@@ -103,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hasPermission = (perm: string): boolean => {
     if (!profile) return false;
     if (profile.role === 'super_admin') return true;
-    if (profile.role === 'sub_admin') return !!profile.permissions[perm];
+    if (profile.role === 'sub_admin') return !!profile.permissions?.[perm];
     return false;
   };
 
