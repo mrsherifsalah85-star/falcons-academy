@@ -20,9 +20,16 @@ import {
   Upload,
   FileSpreadsheet,
   Download,
+  Users,
 } from 'lucide-react';
 
 type StaffRole = 'super_admin' | 'sub_admin' | 'teacher';
+
+interface GroupOption {
+  id: string;
+  name: string;
+  level?: string | null;
+}
 
 interface ParsedStaffRow {
   email: string;
@@ -128,6 +135,11 @@ async function parseCsvFile(file: File): Promise<ParsedStaffRow[]> {
 export function ManageStaff() {
   const { profile: currentUser } = useAuth();
   const [staff, setStaff] = useState<Profile[]>([]);
+  const [groups, setGroups] = useState<GroupOption[]>([]);
+  const [assignedCountsByStaff, setAssignedCountsByStaff] = useState<Record<string, number>>({});
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [loadingGroupsForEdit, setLoadingGroupsForEdit] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [modalTab, setModalTab] = useState<'single' | 'import'>('single');
@@ -154,18 +166,48 @@ export function ManageStaff() {
   const [authError, setAuthError] = useState('');
 
   const loadStaff = useCallback(async () => {
-    const [profilesRes, authorizedRes] = await Promise.all([
+    const [profilesRes, authorizedRes, groupsRes, assignmentsRes] = await Promise.all([
       supabase.from('profiles').select('*').order('created_at'),
       supabase.from('authorized_users').select('*').order('created_at'),
+      supabase.from('groups').select('id, name, level').order('name'),
+      supabase.from('assistant_groups').select('assistant_id, group_id'),
     ]);
+
     setStaff((profilesRes.data as Profile[]) || []);
     setAuthorized((authorizedRes.data as AuthorizedUser[]) || []);
+    setGroups((groupsRes.data as GroupOption[]) || []);
+
+    const counts: Record<string, number> = {};
+    for (const row of assignmentsRes.data || []) {
+      const aid = String((row as { assistant_id?: string }).assistant_id || '');
+      if (aid) {
+        counts[aid] = (counts[aid] || 0) + 1;
+      }
+    }
+    setAssignedCountsByStaff(counts);
     setLoading(false);
   }, []);
 
   useEffect(() => {
     loadStaff();
   }, [loadStaff]);
+
+  const syncSubAdminGroups = async (staffId: string, nextRole: StaffRole, groupIds: string[]) => {
+    const { error: deleteError } = await supabase
+      .from('assistant_groups')
+      .delete()
+      .eq('assistant_id', staffId);
+    if (deleteError) throw deleteError;
+
+    if (nextRole === 'sub_admin' && groupIds.length > 0) {
+      const rows = groupIds.map((groupId) => ({
+        assistant_id: staffId,
+        group_id: groupId,
+      }));
+      const { error: insertError } = await supabase.from('assistant_groups').insert(rows);
+      if (insertError) throw insertError;
+    }
+  };
 
   const resetModal = () => {
     setShowModal(false);
@@ -175,6 +217,8 @@ export function ManageStaff() {
     setDisplayName('');
     setRole('teacher');
     setPermissions({});
+    setSelectedGroupIds([]);
+    setLoadingGroupsForEdit(false);
     setSaveError('');
     setImportedFileName('');
     setImportedRows([]);
@@ -298,13 +342,27 @@ export function ManageStaff() {
     }
   };
 
-  const handleEdit = (p: Profile) => {
+  const handleEdit = async (p: Profile) => {
     setEditingProfile(p);
     setModalTab('single');
     setDisplayName(p.display_name);
-    setRole(p.role === 'super_admin' ? 'super_admin' : p.role === 'sub_admin' ? 'sub_admin' : 'teacher');
+    const initialRole: StaffRole =
+      p.role === 'super_admin' ? 'super_admin' : p.role === 'sub_admin' ? 'sub_admin' : 'teacher';
+    setRole(initialRole);
     setPermissions({ ...p.permissions });
+    setSelectedGroupIds([]);
+    setSaveError('');
     setShowModal(true);
+
+    if (initialRole === 'sub_admin') {
+      setLoadingGroupsForEdit(true);
+      const { data } = await supabase
+        .from('assistant_groups')
+        .select('group_id')
+        .eq('assistant_id', p.id);
+      setSelectedGroupIds((data || []).map((row) => String((row as { group_id: string }).group_id)));
+      setLoadingGroupsForEdit(false);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -319,6 +377,9 @@ export function ManageStaff() {
       };
       const { error } = await supabase.from('profiles').update(updates).eq('id', editingProfile.id);
       if (error) throw error;
+
+      await syncSubAdminGroups(editingProfile.id, role, selectedGroupIds);
+
       await loadStaff();
       resetModal();
     } catch (err) {
@@ -341,6 +402,10 @@ export function ManageStaff() {
       alert('Failed to update role: ' + error.message);
       return;
     }
+    if (newRole !== 'sub_admin') {
+      await supabase.from('assistant_groups').delete().eq('assistant_id', p.id);
+      setAssignedCountsByStaff((prev) => ({ ...prev, [p.id]: 0 }));
+    }
     setStaff(staff.map((s) => (
       s.id === p.id
         ? { ...s, role: newRole, permissions: newRole !== 'sub_admin' ? {} : s.permissions }
@@ -350,6 +415,12 @@ export function ManageStaff() {
 
   const handleTogglePermission = (key: string) => {
     setPermissions((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleToggleAssignedGroup = (groupId: string) => {
+    setSelectedGroupIds((prev) =>
+      prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]
+    );
   };
 
   const handleAddAuthorized = async () => {
@@ -580,71 +651,78 @@ export function ManageStaff() {
 
       <h2 className="text-lg font-semibold text-slate-900 mb-3">All Staff Accounts</h2>
       <div className="space-y-3">
-        {staff.map((p) => (
-          <div key={p.id} className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                p.role === 'super_admin' ? 'bg-blue-100 text-blue-600'
-                : p.role === 'sub_admin' ? 'bg-amber-100 text-amber-600'
-                : 'bg-emerald-100 text-emerald-600'
-              }`}>
-                <UserIcon className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold text-slate-900 truncate">
-                  {p.display_name}
-                  {p.id === currentUser?.id && <span className="text-xs text-slate-400 font-normal ml-1.5">(You)</span>}
-                </p>
-                <p className="text-xs text-slate-400 truncate">{p.email}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 shrink-0 flex-wrap">
-              <div className="relative">
-                <select
-                  value={p.role}
-                  onChange={(e) => handleRoleChange(p, e.target.value as StaffRole)}
-                  className={`appearance-none text-xs font-medium px-3 py-1.5 pr-8 rounded-full border cursor-pointer outline-none transition-all ${
-                    p.role === 'super_admin' ? 'bg-blue-50 border-blue-200 text-blue-700'
-                    : p.role === 'sub_admin' ? 'bg-amber-50 border-amber-200 text-amber-700'
-                    : 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                  }`}
-                >
-                  <option value="super_admin">Super Admin</option>
-                  <option value="sub_admin">Sub Admin</option>
-                  <option value="teacher">Teacher</option>
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              </div>
-              {p.role === 'sub_admin' && Object.entries(p.permissions).filter(([, v]) => v).length > 0 && (
-                <div className="flex flex-wrap gap-1 justify-end max-w-xs">
-                  {Object.entries(p.permissions).filter(([, v]) => v).map(([key]) => (
-                    <span key={key} className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-500">
-                      {ALL_PERMISSIONS.find((perm) => perm.key === key)?.label ?? key}
-                    </span>
-                  ))}
+        {staff.map((p) => {
+          const assignedCount = assignedCountsByStaff[p.id] || 0;
+          return (
+            <div key={p.id} className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+                  p.role === 'super_admin' ? 'bg-blue-100 text-blue-600'
+                  : p.role === 'sub_admin' ? 'bg-amber-100 text-amber-600'
+                  : 'bg-emerald-100 text-emerald-600'
+                }`}>
+                  <UserIcon className="w-5 h-5" />
                 </div>
-              )}
-              <div className="flex gap-1">
-                <button
-                  onClick={() => handleEdit(p)}
-                  className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
-                  title="Edit details & permissions"
-                >
-                  <Edit2 className="w-4 h-4" />
-                </button>
-                {p.id !== currentUser?.id && (
-                  <button
-                    onClick={() => handleDelete(p)}
-                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
-                    title="Delete account"
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-900 truncate">
+                    {p.display_name}
+                    {p.id === currentUser?.id && <span className="text-xs text-slate-400 font-normal ml-1.5">(You)</span>}
+                  </p>
+                  <p className="text-xs text-slate-400 truncate">{p.email}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 shrink-0 flex-wrap">
+                <div className="relative">
+                  <select
+                    value={p.role}
+                    onChange={(e) => handleRoleChange(p, e.target.value as StaffRole)}
+                    className={`appearance-none text-xs font-medium px-3 py-1.5 pr-8 rounded-full border cursor-pointer outline-none transition-all ${
+                      p.role === 'super_admin' ? 'bg-blue-50 border-blue-200 text-blue-700'
+                      : p.role === 'sub_admin' ? 'bg-amber-50 border-amber-200 text-amber-700'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    }`}
                   >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                    <option value="super_admin">Super Admin</option>
+                    <option value="sub_admin">Sub Admin</option>
+                    <option value="teacher">Teacher</option>
+                  </select>
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                </div>
+                {p.role === 'sub_admin' && (
+                  <div className="flex flex-wrap gap-1 justify-end max-w-xs">
+                    <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-medium inline-flex items-center gap-1">
+                      <Users className="w-3 h-3" />
+                      {assignedCount} {assignedCount === 1 ? 'group' : 'groups'}
+                    </span>
+                    {Object.entries(p.permissions).filter(([, v]) => v).map(([key]) => (
+                      <span key={key} className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-500">
+                        {ALL_PERMISSIONS.find((perm) => perm.key === key)?.label ?? key}
+                      </span>
+                    ))}
+                  </div>
                 )}
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => handleEdit(p)}
+                    className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
+                    title="Edit details & permissions"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  {p.id !== currentUser?.id && (
+                    <button
+                      onClick={() => handleDelete(p)}
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
+                      title="Delete account"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Add/Edit Staff Modal */}
@@ -833,7 +911,7 @@ export function ManageStaff() {
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => { setRole('super_admin'); setPermissions({}); }}
+                          onClick={() => { setRole('super_admin'); setPermissions({}); setSelectedGroupIds([]); }}
                           className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
                             role === 'super_admin'
                               ? 'bg-blue-50 border-blue-300 text-blue-700'
@@ -855,7 +933,7 @@ export function ManageStaff() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setRole('teacher'); setPermissions({}); }}
+                          onClick={() => { setRole('teacher'); setPermissions({}); setSelectedGroupIds([]); }}
                           className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
                             role === 'teacher'
                               ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
@@ -868,33 +946,89 @@ export function ManageStaff() {
                     </div>
 
                     {role === 'sub_admin' && (
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">Permissions</label>
-                        <div className="space-y-2">
-                          {ALL_PERMISSIONS.map((perm) => (
-                            <label
-                              key={perm.key}
-                              className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => handleTogglePermission(perm.key)}
-                                className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all ${
-                                  permissions[perm.key]
-                                    ? 'bg-blue-600 border-blue-600'
-                                    : 'border-slate-300 bg-white'
-                                }`}
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-2">Permissions</label>
+                          <div className="space-y-2">
+                            {ALL_PERMISSIONS.map((perm) => (
+                              <label
+                                key={perm.key}
+                                className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
                               >
-                                {permissions[perm.key] && <Check className="w-3.5 h-3.5 text-white" />}
-                              </button>
-                              <div className="min-w-0">
-                                <p className="text-sm font-medium text-slate-800">{perm.label}</p>
-                                <p className="text-xs text-slate-400">{perm.description}</p>
-                              </div>
-                            </label>
-                          ))}
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePermission(perm.key)}
+                                  className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all ${
+                                    permissions[perm.key]
+                                      ? 'bg-blue-600 border-blue-600'
+                                      : 'border-slate-300 bg-white'
+                                  }`}
+                                >
+                                  {permissions[perm.key] && <Check className="w-3.5 h-3.5 text-white" />}
+                                </button>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium text-slate-800">{perm.label}</p>
+                                  <p className="text-xs text-slate-400">{perm.description}</p>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
                         </div>
-                      </div>
+
+                        {isEditing && (
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="block text-sm font-medium text-slate-700">
+                                Assigned Groups (Assistant Access)
+                              </label>
+                              <span className="text-xs text-slate-400">
+                                {selectedGroupIds.length} selected
+                              </span>
+                            </div>
+
+                            {loadingGroupsForEdit ? (
+                              <div className="flex items-center gap-2 py-3 text-xs text-slate-500">
+                                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                                <span>Loading groups...</span>
+                              </div>
+                            ) : groups.length === 0 ? (
+                              <p className="text-xs text-slate-400 py-2">No groups available.</p>
+                            ) : (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                                {groups.map((g) => {
+                                  const checked = selectedGroupIds.includes(g.id);
+                                  return (
+                                    <button
+                                      key={g.id}
+                                      type="button"
+                                      onClick={() => handleToggleAssignedGroup(g.id)}
+                                      className={`flex items-center justify-between px-3 py-2 rounded-lg border text-left text-xs transition-all ${
+                                        checked
+                                          ? 'bg-blue-50 border-blue-300 text-blue-900 font-semibold'
+                                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      <span className="truncate">
+                                        {g.name}
+                                        {g.level ? ` — ${g.level}` : ''}
+                                      </span>
+                                      <span
+                                        className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                          checked
+                                            ? 'bg-blue-600 border-blue-600 text-white'
+                                            : 'border-slate-300 bg-white'
+                                        }`}
+                                      >
+                                        {checked && <Check className="w-3 h-3" />}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {saveError && (
