@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { supabase } from '@/lib/supabase';
 import type { Profile, Role } from '@/types';
 
+const SUPER_ADMIN_EMAIL = 'mrsherifsalah85@gmail.com';
+
 interface AuthContextType {
   profile: Profile | null;
   loading: boolean;
@@ -23,18 +25,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    const blockUnauthorized = async () => {
+      await supabase.auth.signOut();
+      if (mounted) {
+        setProfile(null);
+        setLoading(false);
+      }
+    };
+
     const loadProfile = async (userId: string, userEmail?: string) => {
       if (!userEmail) {
-        alert('Auth debug: no email on session');
-        await supabase.auth.signOut();
-        if (mounted) {
-          setProfile(null);
-          setLoading(false);
-        }
+        await blockUnauthorized();
         return;
       }
 
       const normalizedEmail = userEmail.trim().toLowerCase();
+      const isOwnerSuperAdmin = normalizedEmail === SUPER_ADMIN_EMAIL;
+
+      let role: Role = isOwnerSuperAdmin ? 'super_admin' : 'teacher';
+      let displayName = isOwnerSuperAdmin ? 'Sherif Salah' : normalizedEmail.split('@')[0];
+
       const { data: allowed, error: allowedError } = await supabase
         .from('authorized_users')
         .select('role, name, is_active')
@@ -43,19 +53,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!mounted) return;
 
-      if (allowedError || !allowed || !allowed.is_active) {
-        alert(
-          `Auth check failed for ${normalizedEmail}: ` +
-            (allowedError ? allowedError.message : !allowed ? 'row not found in authorized_users' : 'is_active is false')
-        );
-        await supabase.auth.signOut();
-        setProfile(null);
-        setLoading(false);
-        return;
+      if (!isOwnerSuperAdmin) {
+        if (allowedError || !allowed || !allowed.is_active) {
+          await blockUnauthorized();
+          return;
+        }
+        role = (allowed.role as Role) || 'teacher';
+        displayName = allowed.name || displayName;
+      } else if (!allowedError && allowed) {
+        if (allowed.is_active === false) {
+          await blockUnauthorized();
+          return;
+        }
+        role = (allowed.role as Role) || 'super_admin';
+        displayName = allowed.name || displayName;
       }
-
-      const role = (allowed.role as Role) || 'super_admin';
-      const displayName = allowed.name || normalizedEmail.split('@')[0];
 
       const fallbackProfile: Profile = {
         id: userId,
@@ -81,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ...fallbackProfile,
             ...(data as Profile),
             role,
-            display_name: allowed.name || (data as Profile).display_name || displayName,
+            display_name: allowed?.name || (data as Profile).display_name || displayName,
             permissions: (data as Profile).permissions || {},
           });
         }
