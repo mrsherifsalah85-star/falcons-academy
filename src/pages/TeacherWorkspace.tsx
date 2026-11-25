@@ -833,12 +833,11 @@ export function TeacherWorkspace() {
 
     if (shareConfig.behavior.enabled) {
       if (shareConfig.behavior.mode === 'all') {
-        const allBehaviorLines = students
-          .map((s) => {
-            const ev = evaluations.find((e) => e.student_id === s.id);
-            const beh = ev?.behavior || 'Committed';
-            return `${s.name} (${beh})`;
-          });
+        const allBehaviorLines = students.map((s) => {
+          const ev = evaluations.find((e) => e.student_id === s.id);
+          const beh = ev?.behavior || 'Committed';
+          return `${s.name} (${beh})`;
+        });
 
         if (allBehaviorLines.length > 0) {
           sections.push(`*السلوك (جميع الطلاب):*\n${formatBulletLines(allBehaviorLines)}`);
