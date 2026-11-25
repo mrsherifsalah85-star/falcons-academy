@@ -19,6 +19,8 @@ import {
   Mail,
 } from 'lucide-react';
 
+type StaffRole = 'super_admin' | 'sub_admin' | 'teacher';
+
 export function ManageStaff() {
   const { profile: currentUser } = useAuth();
   const [staff, setStaff] = useState<Profile[]>([]);
@@ -27,14 +29,14 @@ export function ManageStaff() {
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [role, setRole] = useState<'super_admin' | 'sub_admin' | 'teacher'>('teacher');
+  const [role, setRole] = useState<StaffRole>('teacher');
   const [permissions, setPermissions] = useState<Record<string, boolean>>({});
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
   const [authorized, setAuthorized] = useState<AuthorizedUser[]>([]);
   const [authEmail, setAuthEmail] = useState('');
   const [authName, setAuthName] = useState('');
-  const [authRole, setAuthRole] = useState<'super_admin' | 'teacher'>('teacher');
+  const [authRole, setAuthRole] = useState<StaffRole>('teacher');
   const [authSaving, setAuthSaving] = useState(false);
   const [authError, setAuthError] = useState('');
 
@@ -72,7 +74,7 @@ export function ManageStaff() {
       const { error } = await supabase.from('authorized_users').insert({
         email: normalizedEmail,
         name: displayName.trim(),
-        role: role === 'super_admin' ? 'super_admin' : 'teacher',
+        role,
         is_active: true,
       });
       if (error) {
@@ -105,7 +107,7 @@ export function ManageStaff() {
     try {
       const updates: Partial<Profile> = {
         display_name: displayName,
-        permissions,
+        permissions: role === 'sub_admin' ? permissions : {},
         role,
       };
       const { error } = await supabase.from('profiles').update(updates).eq('id', editingProfile.id);
@@ -119,20 +121,24 @@ export function ManageStaff() {
     }
   };
 
-  const handleRoleChange = async (p: Profile, newRole: 'super_admin' | 'sub_admin' | 'teacher') => {
+  const handleRoleChange = async (p: Profile, newRole: StaffRole) => {
     if (newRole === p.role) return;
     if (p.id === currentUser?.id && newRole !== 'super_admin') {
       alert('You cannot demote yourself. Ask another Super Admin to do it.');
       return;
     }
     const updates: Partial<Profile> = { role: newRole };
-    if (newRole === 'teacher') updates.permissions = {};
+    if (newRole !== 'sub_admin') updates.permissions = {};
     const { error } = await supabase.from('profiles').update(updates).eq('id', p.id);
     if (error) {
       alert('Failed to update role: ' + error.message);
       return;
     }
-    setStaff(staff.map((s) => (s.id === p.id ? { ...s, role: newRole, permissions: newRole === 'teacher' ? {} : s.permissions } : s)));
+    setStaff(staff.map((s) => (
+      s.id === p.id
+        ? { ...s, role: newRole, permissions: newRole !== 'sub_admin' ? {} : s.permissions }
+        : s
+    )));
   };
 
   const handleTogglePermission = (key: string) => {
@@ -262,10 +268,11 @@ export function ManageStaff() {
           />
           <select
             value={authRole}
-            onChange={(e) => setAuthRole(e.target.value as 'super_admin' | 'teacher')}
-            className="w-full sm:w-36 px-3 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-700 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+            onChange={(e) => setAuthRole(e.target.value as StaffRole)}
+            className="w-full sm:w-40 px-3 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-700 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
           >
             <option value="teacher">Teacher</option>
+            <option value="sub_admin">Sub Admin</option>
             <option value="super_admin">Super Admin</option>
           </select>
           <button
@@ -291,6 +298,19 @@ export function ManageStaff() {
           ) : (
             authorized.map((user) => {
               const hasAccount = staff.some((s) => s.email.toLowerCase() === user.email.toLowerCase());
+              const roleBadgeClass =
+                user.role === 'super_admin'
+                  ? 'bg-blue-50 text-blue-700'
+                  : user.role === 'sub_admin'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-emerald-50 text-emerald-700';
+              const roleLabel =
+                user.role === 'super_admin'
+                  ? 'Super Admin'
+                  : user.role === 'sub_admin'
+                  ? 'Sub Admin'
+                  : 'Teacher';
+
               return (
                 <div
                   key={user.email}
@@ -298,19 +318,19 @@ export function ManageStaff() {
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
-                      user.role === 'super_admin' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'
+                      user.role === 'super_admin'
+                        ? 'bg-blue-100 text-blue-600'
+                        : user.role === 'sub_admin'
+                        ? 'bg-amber-100 text-amber-600'
+                        : 'bg-emerald-100 text-emerald-600'
                     }`}>
                       <Mail className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-slate-800 truncate">
                         {user.name || user.email.split('@')[0]}
-                        <span className={`ml-2 text-xs px-2 py-0.5 rounded-full font-medium ${
-                          user.role === 'super_admin'
-                            ? 'bg-blue-50 text-blue-700'
-                            : 'bg-emerald-50 text-emerald-700'
-                        }`}>
-                          {user.role === 'super_admin' ? 'Super Admin' : 'Teacher'}
+                        <span className={`ml-2 text-xs px-2 py-0.5 rounded-full font-medium ${roleBadgeClass}`}>
+                          {roleLabel}
                         </span>
                         {hasAccount && (
                           <span className="ml-1.5 text-xs text-slate-400">(account created)</span>
@@ -371,7 +391,7 @@ export function ManageStaff() {
               <div className="relative">
                 <select
                   value={p.role}
-                  onChange={(e) => handleRoleChange(p, e.target.value as 'super_admin' | 'sub_admin' | 'teacher')}
+                  onChange={(e) => handleRoleChange(p, e.target.value as StaffRole)}
                   className={`appearance-none text-xs font-medium px-3 py-1.5 pr-8 rounded-full border cursor-pointer outline-none transition-all ${
                     p.role === 'super_admin' ? 'bg-blue-50 border-blue-200 text-blue-700'
                     : p.role === 'sub_admin' ? 'bg-amber-50 border-amber-200 text-amber-700'
@@ -379,7 +399,7 @@ export function ManageStaff() {
                   }`}
                 >
                   <option value="super_admin">Super Admin</option>
-                  <option value="sub_admin">Sub-Admin</option>
+                  <option value="sub_admin">Sub Admin</option>
                   <option value="teacher">Teacher</option>
                 </select>
                 <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
@@ -463,6 +483,7 @@ export function ManageStaff() {
                   <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
                   <div className="flex gap-2">
                     <button
+                      type="button"
                       onClick={() => { setRole('super_admin'); setPermissions({}); }}
                       className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
                         role === 'super_admin'
@@ -473,6 +494,18 @@ export function ManageStaff() {
                       Super Admin
                     </button>
                     <button
+                      type="button"
+                      onClick={() => { setRole('sub_admin'); }}
+                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
+                        role === 'sub_admin'
+                          ? 'bg-amber-50 border-amber-300 text-amber-700'
+                          : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                      }`}
+                    >
+                      Sub Admin
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => { setRole('teacher'); setPermissions({}); }}
                       className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
                         role === 'teacher'
