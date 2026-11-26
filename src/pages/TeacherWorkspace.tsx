@@ -118,10 +118,11 @@ export function computeCoursePaceAnalysis(params: {
     actualSessions,
     manualStartDate,
     earliestSessionDate,
-    daysPerSession = 3.5,
+    daysPerSession = 7,
   } = params;
 
-  const effectiveStartDate = (manualStartDate && manualStartDate.trim()) || earliestSessionDate || null;
+  const effectiveStartDate =
+    (manualStartDate && manualStartDate.trim()) || earliestSessionDate || null;
 
   if (!effectiveStartDate || actualSessions === 0) {
     return {
@@ -264,7 +265,9 @@ export function TeacherWorkspace() {
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [showWhatsappSettings, setShowWhatsappSettings] = useState(false);
   const [whatsappSaving, setWhatsappSaving] = useState(false);
-  const [whatsappMsg, setWhatsappMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [whatsappMsg, setWhatsappMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
+    null
+  );
 
   const loadGroups = useCallback(async () => {
     if (!profile?.id) {
@@ -431,7 +434,10 @@ export function TeacherWorkspace() {
       .eq('session_report_id', selectedReport.id)
       .then(({ data, error }) => {
         if (error) {
-          setSaveMsg({ type: 'error', text: extractErrorMessage(error, 'Failed to load evaluations') });
+          setSaveMsg({
+            type: 'error',
+            text: extractErrorMessage(error, 'Failed to load evaluations'),
+          });
         } else {
           setEvaluations((data as Evaluation[]) || []);
         }
@@ -596,7 +602,6 @@ export function TeacherWorkspace() {
         prev.map((g) => (g.id === selectedGroupId ? { ...g, ...groupCoursePayload } : g))
       );
 
-      // Derive overall session pace from active courses analysis for backward compatibility
       const activeStatuses = [
         course1Active ? courseStats.c1Analysis.status : null,
         course2Active ? courseStats.c2Analysis.status : null,
@@ -737,7 +742,10 @@ export function TeacherWorkspace() {
       setSaveMsg({ type: 'success', text: 'Session report deleted successfully.' });
       setTimeout(() => setSaveMsg(null), 3000);
     } catch (err) {
-      setSaveMsg({ type: 'error', text: extractErrorMessage(err, 'Failed to delete session report') });
+      setSaveMsg({
+        type: 'error',
+        text: extractErrorMessage(err, 'Failed to delete session report'),
+      });
     } finally {
       setDeleting(false);
     }
@@ -783,7 +791,11 @@ export function TeacherWorkspace() {
     }
   };
 
-  const updateCustomField = (studentId: string, colId: string, value: string | number | null) => {
+  const updateCustomField = (
+    studentId: string,
+    colId: string,
+    value: string | number | null
+  ) => {
     const existing = evaluations.find((e) => e.student_id === studentId);
     if (existing) {
       setEvaluations(
@@ -816,7 +828,10 @@ export function TeacherWorkspace() {
     if (!selectedGroupId || !newColumnName.trim()) return;
     const options =
       newColumnType === 'dropdown'
-        ? newColumnOptions.split(',').map((o) => o.trim()).filter(Boolean)
+        ? newColumnOptions
+            .split(',')
+            .map((o) => o.trim())
+            .filter(Boolean)
         : [];
     const { data, error } = await supabase
       .from('custom_columns')
@@ -883,7 +898,10 @@ export function TeacherWorkspace() {
         setShowWhatsappSettings(false);
       }, 1200);
     } catch (err) {
-      setWhatsappMsg({ type: 'error', text: extractErrorMessage(err, 'Failed to save WhatsApp number') });
+      setWhatsappMsg({
+        type: 'error',
+        text: extractErrorMessage(err, 'Failed to save WhatsApp number'),
+      });
     } finally {
       setWhatsappSaving(false);
     }
@@ -940,7 +958,7 @@ export function TeacherWorkspace() {
 
         if (lowQuizNames.length > 0) {
           sections.push(
-            `*يحتاجون متابعة في الكويز (أقل من 70%):*\n${formatBulletLines(lowQuizNames)}`
+            `*طلاب محتاجين يذاكروا أكتر:*\n${formatBulletLines(lowQuizNames)}`
           );
         }
       }
@@ -974,7 +992,7 @@ export function TeacherWorkspace() {
 
         if (lowDictationNames.length > 0) {
           sections.push(
-            `*يحتاجون متابعة في الإملاء (أقل من 70%):*\n${formatBulletLines(lowDictationNames)}`
+            `*طلاب محتاجين يهتموا بمذاكرة الكلمات والـ dictation أكتر:*\n${formatBulletLines(lowDictationNames)}`
           );
         }
       }
@@ -1029,7 +1047,9 @@ export function TeacherWorkspace() {
           .map((s) => s.name);
 
         if (homeworkAlertNames.length > 0) {
-          sections.push(`*متابعة الواجب:*\n${formatBulletLines(homeworkAlertNames)}`);
+          sections.push(
+            `*طلاب محتاجين يهتموا بعمل الواجب:*\n${formatBulletLines(homeworkAlertNames)}`
+          );
         }
       }
     }
@@ -1054,7 +1074,9 @@ export function TeacherWorkspace() {
           .map((s) => s.name);
 
         if (disruptiveNames.length > 0) {
-          sections.push(`*ملاحظات السلوك:*\n${formatBulletLines(disruptiveNames)}`);
+          sections.push(
+            `*ملاحظات على السلوك (طلاب مشاغبين في الـ session):*\n${formatBulletLines(disruptiveNames)}`
+          );
         }
       }
     }
@@ -1092,7 +1114,9 @@ export function TeacherWorkspace() {
     }
 
     const followUpSection =
-      sections.length > 0 ? sections.join('\n\n') : 'لا توجد ملاحظات أو حالات متابعة خاصة لهذه الجلسة.';
+      sections.length > 0
+        ? sections.join('\n\n')
+        : 'لا توجد ملاحظات أو حالات متابعة خاصة لهذه الجلسة.';
 
     const topics = sessionContent.trim() || 'لم يتم تسجيل محتوى الجلسة بعد.';
     const homeworkText = sessionHomework.trim() || 'لا يوجد واجب مسجل لهذه الجلسة.';
@@ -1229,7 +1253,6 @@ ${followUpSection}
         }`}
       >
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
-          {/* Editable course input */}
           <div className="lg:col-span-4">
             <label className="block text-[11px] font-semibold text-slate-500 mb-1">
               {title} (Editable)
@@ -1243,22 +1266,19 @@ ${followUpSection}
             />
           </div>
 
-          {/* Target counter + Actual counter */}
           <div className="lg:col-span-3 grid grid-cols-2 gap-2">
             <div>
               <label className="block text-[11px] font-semibold text-slate-500 mb-1">
                 Target Sessions
               </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={targetValue}
-                  onChange={(e) => onTargetChange(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 focus:border-blue-500 outline-none"
-                />
-              </div>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={targetValue}
+                onChange={(e) => onTargetChange(Math.max(1, Number(e.target.value) || 1))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 focus:border-blue-500 outline-none"
+              />
             </div>
 
             <div>
@@ -1272,7 +1292,6 @@ ${followUpSection}
             </div>
           </div>
 
-          {/* Start Date (manual or automatic from first session) */}
           <div className="lg:col-span-3">
             <label className="block text-[11px] font-semibold text-slate-500 mb-1">
               Start Date {autoStartDate && !startDateValue ? `(Auto: ${autoStartDate})` : ''}
@@ -1285,7 +1304,6 @@ ${followUpSection}
             />
           </div>
 
-          {/* ON / OFF toggle */}
           <div className="lg:col-span-2 flex lg:flex-col items-center lg:items-end justify-between gap-1.5">
             <span className="text-[11px] font-semibold text-slate-500 lg:hidden">Session Status</span>
             <button
@@ -1303,13 +1321,15 @@ ${followUpSection}
           </div>
         </div>
 
-        {/* Live pace analysis badge */}
         <div className="mt-2.5 pt-2 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-2 text-xs">
           <span className="text-slate-500">
-            Expected by today: <strong className="text-slate-700">{analysis.expectedSessions}</strong> / {targetValue}
+            Expected by today: <strong className="text-slate-700">{analysis.expectedSessions}</strong> /{' '}
+            {targetValue}
             {analysis.effectiveStartDate ? ` • Since ${analysis.effectiveStartDate}` : ''}
           </span>
-          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-semibold border ${badgeClass}`}>
+          <span
+            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-semibold border ${badgeClass}`}
+          >
             <TrendingUp className="w-3 h-3" />
             {analysis.label}
           </span>
@@ -1328,7 +1348,6 @@ ${followUpSection}
 
   return (
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Teacher Workspace</h1>
@@ -1380,7 +1399,6 @@ ${followUpSection}
         </div>
       )}
 
-      {/* Group & Session selector */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
@@ -1411,15 +1429,13 @@ ${followUpSection}
             <label className="block text-xs font-semibold text-slate-500 uppercase mb-1.5">
               Session Date
             </label>
-            <div className="relative">
-              <input
-                type="date"
-                value={reportDate}
-                onChange={(e) => setReportDate(e.target.value)}
-                disabled={!selectedGroupId}
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-800 bg-white focus:border-blue-500 outline-none disabled:bg-slate-50"
-              />
-            </div>
+            <input
+              type="date"
+              value={reportDate}
+              onChange={(e) => setReportDate(e.target.value)}
+              disabled={!selectedGroupId}
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-800 bg-white focus:border-blue-500 outline-none disabled:bg-slate-50"
+            />
           </div>
 
           <div>
@@ -1454,7 +1470,11 @@ ${followUpSection}
                   className="p-2.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   title="Delete selected session report"
                 >
-                  {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  {deleting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
                 </button>
               )}
             </div>
@@ -1472,7 +1492,6 @@ ${followUpSection}
         </div>
       ) : (
         <>
-          {/* Session Notes & Two Courses Pacing Section */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
@@ -1515,7 +1534,6 @@ ${followUpSection}
               </div>
             </div>
 
-            {/* Two stacked course rows (replaces On Time / Delayed / Faster buttons) */}
             <div className="pt-2 border-t border-slate-100 space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <span className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5">
@@ -1560,7 +1578,6 @@ ${followUpSection}
               })}
             </div>
 
-            {/* Max scores & WhatsApp share */}
             <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-4 flex-wrap text-xs">
                 <label className="flex items-center gap-1.5 text-slate-600 font-medium">
@@ -1580,7 +1597,9 @@ ${followUpSection}
                     type="number"
                     min={1}
                     value={dictationMaxScore}
-                    onChange={(e) => setDictationMaxScore(Math.max(1, Number(e.target.value) || 10))}
+                    onChange={(e) =>
+                      setDictationMaxScore(Math.max(1, Number(e.target.value) || 10))
+                    }
                     className="w-16 px-2 py-1 rounded border border-slate-300 text-slate-800"
                   />
                 </label>
@@ -1621,7 +1640,6 @@ ${followUpSection}
             </div>
           </div>
 
-          {/* Students Evaluations Table */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left border-collapse">
@@ -1828,7 +1846,6 @@ ${followUpSection}
         </>
       )}
 
-      {/* Add Custom Column Modal */}
       {showAddColumn && (
         <div
           className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
@@ -1908,7 +1925,6 @@ ${followUpSection}
         </div>
       )}
 
-      {/* WhatsApp Settings Modal */}
       {showWhatsappSettings && (
         <div
           className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
