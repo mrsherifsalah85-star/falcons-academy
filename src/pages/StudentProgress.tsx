@@ -65,28 +65,94 @@ export function StudentProgress() {
   const [loadingSeries, setLoadingSeries] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number; point: SeriesPoint } | null>(null);
 
+  const isSuperAdmin = profile?.role === 'super_admin';
   const isTeacher = profile?.role === 'teacher';
+  const isSubAdmin = profile?.role === 'sub_admin';
+  const canViewAllGroups = isSuperAdmin || Boolean(profile?.permissions?.view_all_groups);
 
   const loadGroups = useCallback(async () => {
-    let query = supabase.from('groups').select('*');
-    if (isTeacher) {
-      query = query.eq('teacher_id', profile!.id);
+    if (!profile?.id) {
+      setGroups([]);
+      setSelectedGroupId('');
+      setLoading(false);
+      return;
     }
-    const { data } = await query.order('name');
-    setGroups((data as Group[]) || []);
-    setLoading(false);
-  }, [isTeacher, profile]);
+
+    setLoading(true);
+
+    try {
+      if (canViewAllGroups) {
+        const { data } = await supabase.from('groups').select('*').order('name');
+        const nextGroups = (data as Group[]) || [];
+        setGroups(nextGroups);
+        setSelectedGroupId((prev) => (nextGroups.some((g) => g.id === prev) ? prev : ''));
+        return;
+      }
+
+      if (isTeacher) {
+        const { data } = await supabase
+          .from('groups')
+          .select('*')
+          .eq('teacher_id', profile.id)
+          .order('name');
+        const nextGroups = (data as Group[]) || [];
+        setGroups(nextGroups);
+        setSelectedGroupId((prev) => (nextGroups.some((g) => g.id === prev) ? prev : ''));
+        return;
+      }
+
+      if (isSubAdmin) {
+        const { data: assignments } = await supabase
+          .from('assistant_groups')
+          .select('group_id')
+          .eq('assistant_id', profile.id);
+
+        const allowedGroupIds = Array.from(
+          new Set(
+            (assignments || [])
+              .map((row) => String((row as { group_id?: string }).group_id || ''))
+              .filter(Boolean)
+          )
+        );
+
+        if (allowedGroupIds.length === 0) {
+          setGroups([]);
+          setSelectedGroupId('');
+          return;
+        }
+
+        const { data } = await supabase
+          .from('groups')
+          .select('*')
+          .in('id', allowedGroupIds)
+          .order('name');
+
+        const nextGroups = (data as Group[]) || [];
+        setGroups(nextGroups);
+        setSelectedGroupId((prev) => (nextGroups.some((g) => g.id === prev) ? prev : ''));
+        return;
+      }
+
+      setGroups([]);
+      setSelectedGroupId('');
+    } finally {
+      setLoading(false);
+    }
+  }, [profile?.id, profile?.permissions, canViewAllGroups, isTeacher, isSubAdmin]);
 
   useEffect(() => {
     loadGroups();
   }, [loadGroups]);
 
-  // Load students for the selected group
+  // Load students for the selected group (only if allowed in current groups)
   useEffect(() => {
-    if (!selectedGroupId) {
+    const isAllowedGroup = groups.some((g) => g.id === selectedGroupId);
+    if (!selectedGroupId || !isAllowedGroup) {
       setStudents([]);
+      setSelectedStudentId('');
       return;
     }
+
     supabase
       .from('students')
       .select('*')
@@ -96,7 +162,7 @@ export function StudentProgress() {
         setStudents((data as Student[]) || []);
         setSelectedStudentId('');
       });
-  }, [selectedGroupId]);
+  }, [selectedGroupId, groups]);
 
   // Load series when a student + metric is selected
   useEffect(() => {
@@ -125,14 +191,16 @@ export function StudentProgress() {
           let raw: string | null = null;
           let maxScore = 100;
           if (metric === 'quiz' || metric === 'dictation') {
-            const numVal = metric === 'quiz' ? toNumber(e.quiz_score) : toNumber(e.dictation as string | number | null);
-            maxScore = metric === 'quiz'
-              ? (sr?.quiz_max_score ?? 100)
-              : (sr?.dictation_max_score ?? 10);
+            const numVal =
+              metric === 'quiz'
+                ? toNumber(e.quiz_score)
+                : toNumber(e.dictation as string | number | null);
+            maxScore =
+              metric === 'quiz'
+                ? (sr?.quiz_max_score ?? 100)
+                : (sr?.dictation_max_score ?? 10);
             raw = numVal !== null ? String(numVal) : null;
-            value = numVal !== null && maxScore > 0
-              ? Math.round((numVal / maxScore) * 100)
-              : null;
+            value = numVal !== null && maxScore > 0 ? Math.round((numVal / maxScore) * 100) : null;
           } else {
             raw = (e[metric] as string | null) ?? null;
             const scores = ORDINAL_OPTIONS[metric]?.scores;
@@ -141,7 +209,10 @@ export function StudentProgress() {
           return {
             date: sr?.report_date ?? '',
             label: sr?.report_date
-              ? new Date(sr.report_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              ? new Date(sr.report_date).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                })
               : '',
             value,
             raw,
@@ -168,7 +239,7 @@ export function StudentProgress() {
           Student Progress
         </h1>
         <p className="text-slate-500 text-sm mt-1">
-          Visualize a student's performance across saved sessions over time.
+          Visualize a student&apos;s performance across saved sessions over time.
         </p>
       </div>
 
@@ -186,7 +257,8 @@ export function StudentProgress() {
                 <option value="">All groups</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>
-                    {g.name}{g.level ? ` — ${g.level}` : ''}
+                    {g.name}
+                    {g.level ? ` — ${g.level}` : ''}
                   </option>
                 ))}
               </select>
@@ -256,19 +328,32 @@ export function StudentProgress() {
             title="Not enough sessions yet"
             subtitle={
               sortedSeries.length === 0
-                ? "This student has no saved student_evaluations yet. Progress will appear here once sessions are logged."
-                : "This student has only one saved session. At least two sessions are needed to show a trend."
+                ? 'This student has no saved student_evaluations yet. Progress will appear here once sessions are logged.'
+                : 'This student has only one saved session. At least two sessions are needed to show a trend.'
             }
           />
         ) : (
-          <ProgressChart series={sortedSeries} metric={metric} hover={hover} setHover={setHover} />
+          <ProgressChart
+            series={sortedSeries}
+            metric={metric}
+            hover={hover}
+            setHover={setHover}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle: string }) {
+function EmptyState({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
   return (
     <div className="text-center py-16">
       {icon}
@@ -299,9 +384,11 @@ function ProgressChart({
   const hasAny = validPoints.length > 0;
 
   // X scale: index-based, spread across all series points
-  const xFor = (i: number) => padding.left + (series.length <= 1 ? innerW / 2 : (i / (series.length - 1)) * innerW);
+  const xFor = (i: number) =>
+    padding.left + (series.length <= 1 ? innerW / 2 : (i / (series.length - 1)) * innerW);
   // Y scale: 0..100 -> bottom..top
-  const yFor = (v: number) => padding.top + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
+  const yFor = (v: number) =>
+    padding.top + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
 
   const linePath = useMemo(() => {
     if (!hasAny) return '';
@@ -317,9 +404,16 @@ function ProgressChart({
 
   const areaPath = useMemo(() => {
     if (!hasAny) return '';
-    const pts = series.filter((p, i) => p.value !== null).map((p, i) => ({ p, idx: series.indexOf(p) }));
+    const pts = series
+      .filter((p) => p.value !== null)
+      .map((p) => ({ p, idx: series.indexOf(p) }));
     if (pts.length === 0) return '';
-    const top = pts.map((pt) => `${pt.idx === 0 ? 'M' : 'L'} ${xFor(pt.idx).toFixed(2)} ${yFor(pt.p.value!).toFixed(2)}`).join(' ');
+    const top = pts
+      .map(
+        (pt) =>
+          `${pt.idx === 0 ? 'M' : 'L'} ${xFor(pt.idx).toFixed(2)} ${yFor(pt.p.value!).toFixed(2)}`
+      )
+      .join(' ');
     const lastIdx = pts[pts.length - 1].idx;
     const firstIdx = pts[0].idx;
     return `${top} L ${xFor(lastIdx).toFixed(2)} ${padding.top + innerH} L ${xFor(firstIdx).toFixed(2)} ${padding.top + innerH} Z`;
@@ -346,8 +440,21 @@ function ProgressChart({
           const y = yFor(g);
           return (
             <g key={g}>
-              <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="rgb(241 245 249)" strokeWidth={1} />
-              <text x={padding.left - 10} y={y + 4} textAnchor="end" className="fill-slate-400" style={{ fontSize: 11 }}>
+              <line
+                x1={padding.left}
+                y1={y}
+                x2={width - padding.right}
+                y2={y}
+                stroke="rgb(241 245 249)"
+                strokeWidth={1}
+              />
+              <text
+                x={padding.left - 10}
+                y={y + 4}
+                textAnchor="end"
+                className="fill-slate-400"
+                style={{ fontSize: 11 }}
+              >
                 {g}
               </text>
             </g>
@@ -358,7 +465,14 @@ function ProgressChart({
         {hasAny && (
           <>
             <path d={areaPath} fill="url(#progressArea)" />
-            <path d={linePath} fill="none" stroke="rgb(16 185 129)" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+            <path
+              d={linePath}
+              fill="none"
+              stroke="rgb(16 185 129)"
+              strokeWidth={2.5}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
           </>
         )}
 
@@ -381,7 +495,13 @@ function ProgressChart({
                 />
               )}
               {/* X label */}
-              <text x={cx} y={height - padding.bottom + 20} textAnchor="middle" className="fill-slate-500" style={{ fontSize: 10 }}>
+              <text
+                x={cx}
+                y={height - padding.bottom + 20}
+                textAnchor="middle"
+                className="fill-slate-500"
+                style={{ fontSize: 10 }}
+              >
                 {p.label}
               </text>
               {/* Invisible hit area */}
@@ -417,7 +537,6 @@ function ProgressChart({
         <Tooltip
           point={hover.point}
           metric={metric}
-          chartWidth={width}
           leftPct={hover.x / width}
           topPct={hover.y / height}
           onClose={() => setHover(null)}
@@ -437,20 +556,23 @@ function ProgressChart({
 function Tooltip({
   point,
   metric,
-  chartWidth,
   leftPct,
   topPct,
   onClose,
 }: {
   point: SeriesPoint;
   metric: Metric;
-  chartWidth: number;
   leftPct: number;
   topPct: number;
   onClose: () => void;
 }) {
   const dateLabel = point.date
-    ? new Date(point.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+    ? new Date(point.date).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
     : '—';
 
   const metricLabel = METRICS.find((m) => m.value === metric)?.label ?? metric;
