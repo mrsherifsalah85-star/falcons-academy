@@ -22,9 +22,17 @@ type PaceStatus = 'on_time' | 'delayed' | 'faster' | 'not_started';
 interface GroupWithCourses extends Group {
   teacher_id?: string | null;
   course1_name?: string | null;
+  course1_title?: string | null;
+  course_1_name?: string | null;
+  course1?: string | null;
+  track1_name?: string | null;
   course1_target?: number | null;
   course1_start_date?: string | null;
   course2_name?: string | null;
+  course2_title?: string | null;
+  course_2_name?: string | null;
+  course2?: string | null;
+  track2_name?: string | null;
   course2_target?: number | null;
   course2_start_date?: string | null;
 }
@@ -33,6 +41,35 @@ interface ExtendedSessionReport extends SessionReport {
   course1_active?: boolean | null;
   course2_active?: boolean | null;
   group?: GroupWithCourses;
+}
+
+function resolveCourseLabel(
+  group: GroupWithCourses,
+  courseIndex: 1 | 2
+): string {
+  const candidates =
+    courseIndex === 1
+      ? [
+          group.course1_name,
+          group.course1_title,
+          group.course_1_name,
+          group.track1_name,
+          group.course1,
+        ]
+      : [
+          group.course2_name,
+          group.course2_title,
+          group.course_2_name,
+          group.track2_name,
+          group.course2,
+        ];
+
+  const found = candidates.find(
+    (val) => typeof val === 'string' && val.trim().length > 0
+  );
+
+  if (found) return found.trim();
+  return courseIndex === 1 ? 'Course 1' : 'Course 2';
 }
 
 function evaluateCoursePace(params: {
@@ -52,7 +89,7 @@ function evaluateCoursePace(params: {
     actualSessions,
     manualStartDate,
     earliestSessionDate,
-    daysPerSession = 3.5,
+    daysPerSession = 7, // 1 session per week
   } = params;
 
   const effectiveStartDate =
@@ -165,13 +202,11 @@ export function Dashboard() {
     loadData();
   }, [loadData]);
 
-  // Groups belonging to selected teacher
   const teacherGroups = useMemo(() => {
     if (!selectedTeacherId) return [];
     return groups.filter((g) => g.teacher_id === selectedTeacherId);
   }, [groups, selectedTeacherId]);
 
-  // Keep selectedGroupId valid whenever teacher changes
   useEffect(() => {
     if (teacherGroups.length === 0) {
       setSelectedGroupId('');
@@ -193,7 +228,6 @@ export function Dashboard() {
     [teacherGroups, selectedGroupId]
   );
 
-  // Detailed progress & pace for selected group only
   const selectedGroupDetails = useMemo(() => {
     if (!selectedGroup) return null;
 
@@ -216,6 +250,7 @@ export function Dashboard() {
       actualSessions: c1Sessions.length,
       manualStartDate: selectedGroup.course1_start_date,
       earliestSessionDate: c1EarliestDate,
+      daysPerSession: 7,
     });
 
     const c2Pace = evaluateCoursePace({
@@ -223,6 +258,7 @@ export function Dashboard() {
       actualSessions: c2Sessions.length,
       manualStartDate: selectedGroup.course2_start_date,
       earliestSessionDate: c2EarliestDate,
+      daysPerSession: 7,
     });
 
     const groupReportIds = recentReports
@@ -259,13 +295,13 @@ export function Dashboard() {
       goodHomework,
       notDoneHomework,
       c1: {
-        name: (selectedGroup.course1_name || '').trim() || 'Course 1',
+        name: resolveCourseLabel(selectedGroup, 1),
         actual: c1Sessions.length,
         target: c1Target,
         ...c1Pace,
       },
       c2: {
-        name: (selectedGroup.course2_name || '').trim() || 'Course 2',
+        name: resolveCourseLabel(selectedGroup, 2),
         actual: c2Sessions.length,
         target: c2Target,
         ...c2Pace,
@@ -330,12 +366,12 @@ export function Dashboard() {
           </span>
         </div>
 
-        <div className="flex items-center justify-between text-xs text-slate-600">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
           <span>
-            Actual: <strong className="text-slate-900">{item.actual}</strong> / {item.target} sessions
+            Actual: <strong className="text-slate-900">{item.actual}</strong> / {item.target} sessions ({pct}%)
           </span>
           <span>
-            Expected by today: <strong className="text-slate-800">{item.expectedSessions}</strong> ({pct}%)
+            Expected by today: <strong className="text-slate-800">{item.expectedSessions}</strong> sessions
           </span>
         </div>
 
@@ -366,7 +402,6 @@ export function Dashboard() {
         </p>
       </div>
 
-      {/* Top stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard icon={Users} label="Total Groups" value={groups.length} color="blue" />
         <StatCard icon={Users} label="Total Students" value={students.length} color="emerald" />
@@ -374,7 +409,6 @@ export function Dashboard() {
         <StatCard icon={AlertTriangle} label="Urgent Exams" value={urgentExams.length} color="red" />
       </div>
 
-      {/* Hierarchical Explorer: Teachers -> Groups -> Selected Group Progress */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
         {/* Column 1: Teachers list */}
         <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
@@ -474,7 +508,6 @@ export function Dashboard() {
             </div>
           ) : (
             <div className="space-y-5">
-              {/* Group header */}
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">{selectedGroup.name}</h2>
@@ -501,11 +534,10 @@ export function Dashboard() {
                 </span>
               </div>
 
-              {/* Course 1 & Course 2 Pacing Analysis */}
               <div className="space-y-3">
                 <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
                   <TrendingUp className="w-4 h-4 text-blue-600" />
-                  Courses Pace Analysis (Actual vs Target)
+                  Courses Pace Analysis (1 Session / Week)
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {renderCourseCard(selectedGroupDetails.c1)}
@@ -513,7 +545,6 @@ export function Dashboard() {
                 </div>
               </div>
 
-              {/* Student evaluation summary for this group */}
               <div className="pt-3 border-t border-slate-100">
                 <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-3 flex items-center gap-1.5">
                   <Brain className="w-4 h-4 text-purple-600" />
@@ -559,7 +590,6 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* Upcoming Exam Alarms */}
       {upcomingExams.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
           <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
