@@ -22,6 +22,7 @@ import {
   Power,
   Hash,
   TrendingUp,
+  UserCheck,
 } from 'lucide-react';
 
 const READING_OPTIONS = ['Good', 'Needs Practice', 'Needs Study More'];
@@ -47,6 +48,8 @@ interface ExtendedSessionReport extends SessionReport {
   session_material?: string | null;
   course1_active?: boolean | null;
   course2_active?: boolean | null;
+  created_by?: string | null;
+  updated_by?: string | null;
 }
 
 interface FieldShareConfig {
@@ -224,7 +227,7 @@ function ColumnShareControls({
 export function TeacherWorkspace() {
   const { profile } = useAuth();
   const [groups, setGroups] = useState<GroupWithCourses[]>([]);
-  const [teacherNamesMap, setTeacherNamesMap] = useState<Record<string, string>>({});
+  const [profilesMap, setProfilesMap] = useState<Record<string, string>>({});
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [students, setStudents] = useState<Student[]>([]);
   const [sessionReports, setSessionReports] = useState<ExtendedSessionReport[]>([]);
@@ -268,6 +271,28 @@ export function TeacherWorkspace() {
     null
   );
 
+  const fetchProfilesByIds = useCallback(async (ids: string[]) => {
+    const cleanIds = Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+    if (cleanIds.length === 0) return;
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, display_name')
+      .in('id', cleanIds);
+
+    if (data && data.length > 0) {
+      setProfilesMap((prev) => {
+        const next = { ...prev };
+        for (const row of data) {
+          if (row.id) {
+            next[String(row.id)] = row.display_name || 'Staff Member';
+          }
+        }
+        return next;
+      });
+    }
+  }, []);
+
   const loadGroups = useCallback(async () => {
     if (!profile?.id) {
       setGroups([]);
@@ -310,34 +335,16 @@ export function TeacherWorkspace() {
       const loadedGroups = (data as GroupWithCourses[]) || [];
       setGroups(loadedGroups);
 
-      const teacherIds = Array.from(
-        new Set(
-          loadedGroups
-            .map((g) => g.teacher_id)
-            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-        )
-      );
-
-      if (teacherIds.length > 0) {
-        const { data: teachersData } = await supabase
-          .from('profiles')
-          .select('id, display_name')
-          .in('id', teacherIds);
-
-        const nextMap: Record<string, string> = {};
-        for (const t of teachersData || []) {
-          if (t.id) {
-            nextMap[String(t.id)] = t.display_name || 'Teacher';
-          }
-        }
-        setTeacherNamesMap(nextMap);
-      }
+      const teacherIds = loadedGroups
+        .map((g) => g.teacher_id)
+        .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+      await fetchProfilesByIds([profile.id, ...teacherIds]);
     } catch (err) {
       setSaveMsg({ type: 'error', text: extractErrorMessage(err, 'Failed to load groups') });
     } finally {
       setLoading(false);
     }
-  }, [profile]);
+  }, [profile, fetchProfilesByIds]);
 
   useEffect(() => {
     loadGroups();
@@ -346,6 +353,10 @@ export function TeacherWorkspace() {
   useEffect(() => {
     if (profile?.id) {
       setWhatsappNumber(profile.whatsapp_number ?? '');
+      setProfilesMap((prev) => ({
+        ...prev,
+        [profile.id]: profile.display_name || prev[profile.id] || 'User',
+      }));
     }
   }, [profile]);
 
@@ -412,14 +423,17 @@ export function TeacherWorkspace() {
       .select('*')
       .eq('group_id', selectedGroupId)
       .order('report_date', { ascending: false })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (error) {
           setSaveMsg({ type: 'error', text: extractErrorMessage(error, 'Failed to load sessions') });
         } else {
-          setSessionReports((data as ExtendedSessionReport[]) || []);
+          const reports = (data as ExtendedSessionReport[]) || [];
+          setSessionReports(reports);
+          const actorIds = reports.flatMap((r) => [r.updated_by, r.created_by, r.teacher_id]);
+          await fetchProfilesByIds(actorIds.filter((id): id is string => Boolean(id)));
         }
       });
-  }, [selectedGroupId]);
+  }, [selectedGroupId, fetchProfilesByIds]);
 
   useEffect(() => {
     if (!selectedReport) {
@@ -463,6 +477,28 @@ export function TeacherWorkspace() {
       setDictationMaxScore(10);
     }
   }, [selectedReport]);
+
+  const loggerInfo = useMemo(() => {
+    if (!selectedReport) {
+      return {
+        name: profile?.display_name || 'Current User',
+        isAssistantOrOther: profile?.role !== 'teacher',
+        isNew: true,
+      };
+    }
+    const actorId =
+      selectedReport.updated_by || selectedReport.created_by || selectedReport.teacher_id || '';
+    const resolvedName =
+      (actorId && profilesMap[actorId]) ||
+      (actorId === profile?.id && profile?.display_name) ||
+      'Staff Member';
+    const isTeacherSelf = actorId === selectedReport.teacher_id;
+    return {
+      name: resolvedName,
+      isAssistantOrOther: !isTeacherSelf,
+      isNew: false,
+    };
+  }, [selectedReport, profilesMap, profile]);
 
   const courseStats = useMemo(() => {
     const c1Sessions = sessionReports.filter((r) => Boolean(r.course1_active));
@@ -621,6 +657,7 @@ export function TeacherWorkspace() {
         report_date: reportDate,
         quiz_max_score: quizMaxScore,
         dictation_max_score: dictationMaxScore,
+        updated_by: profile.id,
       };
 
       if (selectedReport) {
@@ -639,6 +676,7 @@ export function TeacherWorkspace() {
           .insert({
             group_id: selectedGroupId,
             teacher_id: effectiveTeacherId,
+            created_by: profile.id,
             ...sessionPayload,
           })
           .select()
@@ -681,7 +719,13 @@ export function TeacherWorkspace() {
         .eq('group_id', selectedGroupId)
         .order('report_date', { ascending: false });
       if (reportsErr) throw reportsErr;
-      setSessionReports((reportsData as ExtendedSessionReport[]) || []);
+      const updatedReports = (reportsData as ExtendedSessionReport[]) || [];
+      setSessionReports(updatedReports);
+      await fetchProfilesByIds(
+        updatedReports.flatMap((r) => [r.updated_by, r.created_by, r.teacher_id]).filter(
+          (id): id is string => Boolean(id)
+        )
+      );
 
       const { data: evalData, error: evalErr } = await supabase
         .from('student_evaluations')
@@ -911,7 +955,7 @@ export function TeacherWorkspace() {
     const selectedGroup = groups.find((g) => g.id === selectedGroupId);
     const groupName = selectedGroup?.name ?? 'Unknown Group';
     const teacherName =
-      (selectedGroup?.teacher_id && teacherNamesMap[selectedGroup.teacher_id]) ||
+      (selectedGroup?.teacher_id && profilesMap[selectedGroup.teacher_id]) ||
       profile?.display_name ||
       'Teacher';
 
@@ -1477,6 +1521,29 @@ ${followUpSection}
             </div>
           </div>
         </div>
+
+        {selectedGroupId && (
+          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="text-slate-500">
+              {loggerInfo.isNew
+                ? 'Creating new session entry as:'
+                : 'Last data entry / update for this session:'}
+            </span>
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-semibold border ${
+                loggerInfo.isAssistantOrOther
+                  ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                  : 'bg-slate-100 text-slate-700 border-slate-200'
+              }`}
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>
+                {loggerInfo.isAssistantOrOther ? 'Assistant / Staff:' : 'Logged by:'}{' '}
+                <strong>{loggerInfo.name}</strong>
+              </span>
+            </span>
+          </div>
+        )}
       </div>
 
       {!selectedGroupId ? (
