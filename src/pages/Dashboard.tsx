@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import type { Group, SessionReport, Evaluation, Exam, Profile, Student } from '@/types';
 import {
@@ -13,11 +12,15 @@ import {
   CheckCircle2,
   XCircle,
   BookOpen,
+  ChevronRight,
+  FolderKanban,
+  UserCheck,
 } from 'lucide-react';
 
 type PaceStatus = 'on_time' | 'delayed' | 'faster' | 'not_started';
 
 interface GroupWithCourses extends Group {
+  teacher_id?: string | null;
   course1_name?: string | null;
   course1_target?: number | null;
   course1_start_date?: string | null;
@@ -98,7 +101,6 @@ function evaluateCoursePace(params: {
 }
 
 export function Dashboard() {
-  const { profile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [groups, setGroups] = useState<GroupWithCourses[]>([]);
   const [teachers, setTeachers] = useState<Profile[]>([]);
@@ -110,6 +112,9 @@ export function Dashboard() {
     (Evaluation & { quiz_max_score?: number })[]
   >([]);
 
+  const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
+
   const loadData = useCallback(async () => {
     const [groupsRes, teachersRes, studentsRes, reportsRes, allSessionsRes, examsRes] =
       await Promise.all([
@@ -120,7 +125,7 @@ export function Dashboard() {
           .from('sessions')
           .select('*, group:groups(*)')
           .order('report_date', { ascending: false })
-          .limit(50),
+          .limit(100),
         supabase
           .from('sessions')
           .select('id, group_id, teacher_id, report_date, pace, course1_active, course2_active')
@@ -128,8 +133,13 @@ export function Dashboard() {
         supabase.from('exams').select('*, group:groups(*)').order('exam_date'),
       ]);
 
-    setGroups((groupsRes.data as GroupWithCourses[]) || []);
-    setTeachers((teachersRes.data as Profile[]) || []);
+    const loadedGroups = (groupsRes.data as GroupWithCourses[]) || [];
+    const loadedTeachers = ((teachersRes.data as Profile[]) || []).filter(
+      (t) => t.role === 'teacher'
+    );
+
+    setGroups(loadedGroups);
+    setTeachers(loadedTeachers);
     setStudents((studentsRes.data as Student[]) || []);
     setRecentReports((reportsRes.data as ExtendedSessionReport[]) || []);
     setAllGroupSessions((allSessionsRes.data as ExtendedSessionReport[]) || []);
@@ -144,6 +154,10 @@ export function Dashboard() {
       setAllEvaluations((evalData as (Evaluation & { quiz_max_score?: number })[]) || []);
     }
 
+    if (loadedTeachers.length > 0) {
+      setSelectedTeacherId((prev) => prev || loadedTeachers[0].id);
+    }
+
     setLoading(false);
   }, []);
 
@@ -151,53 +165,113 @@ export function Dashboard() {
     loadData();
   }, [loadData]);
 
-  // Course pacing analysis per group (Course 1 & Course 2)
-  const coursePacingByGroup = useMemo(() => {
-    return groups.map((group) => {
-      const groupSessions = allGroupSessions.filter((s) => s.group_id === group.id);
+  // Groups belonging to selected teacher
+  const teacherGroups = useMemo(() => {
+    if (!selectedTeacherId) return [];
+    return groups.filter((g) => g.teacher_id === selectedTeacherId);
+  }, [groups, selectedTeacherId]);
 
-      const c1Sessions = groupSessions.filter((s) => Boolean(s.course1_active));
-      const c2Sessions = groupSessions.filter((s) => Boolean(s.course2_active));
+  // Keep selectedGroupId valid whenever teacher changes
+  useEffect(() => {
+    if (teacherGroups.length === 0) {
+      setSelectedGroupId('');
+      return;
+    }
+    const stillExists = teacherGroups.some((g) => g.id === selectedGroupId);
+    if (!stillExists) {
+      setSelectedGroupId(teacherGroups[0].id);
+    }
+  }, [teacherGroups, selectedGroupId]);
 
-      const c1EarliestDate =
-        c1Sessions.map((s) => s.report_date).filter(Boolean).sort()[0] || null;
-      const c2EarliestDate =
-        c2Sessions.map((s) => s.report_date).filter(Boolean).sort()[0] || null;
+  const selectedTeacher = useMemo(
+    () => teachers.find((t) => t.id === selectedTeacherId) || null,
+    [teachers, selectedTeacherId]
+  );
 
-      const c1Target = group.course1_target ?? 20;
-      const c2Target = group.course2_target ?? 20;
+  const selectedGroup = useMemo(
+    () => teacherGroups.find((g) => g.id === selectedGroupId) || null,
+    [teacherGroups, selectedGroupId]
+  );
 
-      const c1 = evaluateCoursePace({
-        targetSessions: c1Target,
-        actualSessions: c1Sessions.length,
-        manualStartDate: group.course1_start_date,
-        earliestSessionDate: c1EarliestDate,
-      });
+  // Detailed progress & pace for selected group only
+  const selectedGroupDetails = useMemo(() => {
+    if (!selectedGroup) return null;
 
-      const c2 = evaluateCoursePace({
-        targetSessions: c2Target,
-        actualSessions: c2Sessions.length,
-        manualStartDate: group.course2_start_date,
-        earliestSessionDate: c2EarliestDate,
-      });
+    const groupStudents = students.filter((s) => s.group_id === selectedGroup.id);
+    const groupSessions = allGroupSessions.filter((s) => s.group_id === selectedGroup.id);
 
-      return {
-        group,
-        c1: {
-          name: (group.course1_name || '').trim() || 'Course 1',
-          actual: c1Sessions.length,
-          target: c1Target,
-          ...c1,
-        },
-        c2: {
-          name: (group.course2_name || '').trim() || 'Course 2',
-          actual: c2Sessions.length,
-          target: c2Target,
-          ...c2,
-        },
-      };
+    const c1Sessions = groupSessions.filter((s) => Boolean(s.course1_active));
+    const c2Sessions = groupSessions.filter((s) => Boolean(s.course2_active));
+
+    const c1EarliestDate =
+      c1Sessions.map((s) => s.report_date).filter(Boolean).sort()[0] || null;
+    const c2EarliestDate =
+      c2Sessions.map((s) => s.report_date).filter(Boolean).sort()[0] || null;
+
+    const c1Target = selectedGroup.course1_target ?? 20;
+    const c2Target = selectedGroup.course2_target ?? 20;
+
+    const c1Pace = evaluateCoursePace({
+      targetSessions: c1Target,
+      actualSessions: c1Sessions.length,
+      manualStartDate: selectedGroup.course1_start_date,
+      earliestSessionDate: c1EarliestDate,
     });
-  }, [groups, allGroupSessions]);
+
+    const c2Pace = evaluateCoursePace({
+      targetSessions: c2Target,
+      actualSessions: c2Sessions.length,
+      manualStartDate: selectedGroup.course2_start_date,
+      earliestSessionDate: c2EarliestDate,
+    });
+
+    const groupReportIds = recentReports
+      .filter((r) => r.group_id === selectedGroup.id)
+      .map((r) => r.id);
+    const groupEvals = allEvaluations.filter((e) =>
+      groupReportIds.includes(e.session_report_id)
+    );
+
+    const quizPcts = groupEvals
+      .filter((e) => e.quiz_score !== null)
+      .map((e) => {
+        const max = (e as Evaluation & { quiz_max_score?: number }).quiz_max_score ?? 100;
+        return Math.round(((e.quiz_score as number) / max) * 100);
+      });
+
+    const avgQuizPct =
+      quizPcts.length > 0
+        ? Math.round(quizPcts.reduce((a, b) => a + b, 0) / quizPcts.length)
+        : null;
+
+    const committed = groupEvals.filter((e) => e.behavior === 'Committed').length;
+    const disruptive = groupEvals.filter((e) => e.behavior === 'Disruptive').length;
+    const goodHomework = groupEvals.filter((e) => e.homework === 'Done Well').length;
+    const notDoneHomework = groupEvals.filter((e) => e.homework === 'Not Done').length;
+
+    return {
+      studentCount: groupStudents.length,
+      sessionsCount: groupSessions.length,
+      evalCount: groupEvals.length,
+      avgQuizPct,
+      committed,
+      disruptive,
+      goodHomework,
+      notDoneHomework,
+      c1: {
+        name: (selectedGroup.course1_name || '').trim() || 'Course 1',
+        actual: c1Sessions.length,
+        target: c1Target,
+        ...c1Pace,
+      },
+      c2: {
+        name: (selectedGroup.course2_name || '').trim() || 'Course 2',
+        actual: c2Sessions.length,
+        target: c2Target,
+        ...c2Pace,
+      },
+    };
+  }, [selectedGroup, students, allGroupSessions, recentReports, allEvaluations]);
 
   if (loading) {
     return (
@@ -206,22 +280,6 @@ export function Dashboard() {
       </div>
     );
   }
-
-  const teacherPace = teachers
-    .filter((t) => t.role === 'teacher')
-    .map((teacher) => {
-      const teacherReports = recentReports.filter((r) => r.teacher_id === teacher.id);
-      const onTime = teacherReports.filter((r) => r.pace === 'on_time').length;
-      const delayed = teacherReports.filter((r) => r.pace === 'delayed').length;
-      const faster = teacherReports.filter((r) => r.pace === 'faster').length;
-      const total = teacherReports.length;
-      return { teacher, onTime, delayed, faster, total };
-    });
-
-  const groupIntelligence = groups.map((g) => {
-    const groupStudents = students.filter((s) => s.group_id === g.id);
-    return { group: g, studentCount: groupStudents.length };
-  });
 
   const today = new Date();
   const upcomingExams = exams
@@ -236,35 +294,7 @@ export function Dashboard() {
 
   const urgentExams = upcomingExams.filter((e) => e.daysUntil <= 7);
 
-  const groupAnalytics = groups.map((g) => {
-    const groupReportIds = recentReports.filter((r) => r.group_id === g.id).map((r) => r.id);
-    const groupEvals = allEvaluations.filter((e) => groupReportIds.includes(e.session_report_id));
-    const quizPcts = groupEvals
-      .filter((e) => e.quiz_score !== null)
-      .map((e) => {
-        const max = (e as Evaluation & { quiz_max_score?: number }).quiz_max_score ?? 100;
-        return Math.round(((e.quiz_score as number) / max) * 100);
-      });
-    const avgQuizPct =
-      quizPcts.length > 0
-        ? Math.round(quizPcts.reduce((a, b) => a + b, 0) / quizPcts.length)
-        : null;
-    const committed = groupEvals.filter((e) => e.behavior === 'Committed').length;
-    const disruptive = groupEvals.filter((e) => e.behavior === 'Disruptive').length;
-    const goodHomework = groupEvals.filter((e) => e.homework === 'Done Well').length;
-    const notDoneHomework = groupEvals.filter((e) => e.homework === 'Not Done').length;
-    return {
-      group: g,
-      avgQuizPct,
-      evalCount: groupEvals.length,
-      committed,
-      disruptive,
-      goodHomework,
-      notDoneHomework,
-    };
-  });
-
-  const renderCourseBadge = (item: {
+  const renderCourseCard = (item: {
     name: string;
     actual: number;
     target: number;
@@ -280,24 +310,49 @@ export function Dashboard() {
       not_started: 'bg-slate-100 text-slate-600 border-slate-200',
     };
 
+    const pct = Math.min(100, Math.round((item.actual / Math.max(1, item.target)) * 100));
+
     return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div>
-          <p className="text-sm font-semibold text-slate-800">{item.name}</p>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Actual: <strong className="text-slate-800">{item.actual}</strong> / {item.target} sessions
-            {' · '}
-            Expected: <strong className="text-slate-700">{item.expectedSessions}</strong>
-            {item.effectiveStartDate ? ` · Start: ${item.effectiveStartDate}` : ''}
-          </p>
+      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-sm font-bold text-slate-900">{item.name}</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Start Date: <strong className="text-slate-700">{item.effectiveStartDate || '—'}</strong>
+            </p>
+          </div>
+          <span
+            className={`text-xs font-bold px-2.5 py-1 rounded-full border shrink-0 ${
+              styleMap[item.status]
+            }`}
+          >
+            {item.label}
+          </span>
         </div>
-        <span
-          className={`text-xs font-bold px-2.5 py-1 rounded-full border shrink-0 self-start sm:self-center ${
-            styleMap[item.status]
-          }`}
-        >
-          {item.label}
-        </span>
+
+        <div className="flex items-center justify-between text-xs text-slate-600">
+          <span>
+            Actual: <strong className="text-slate-900">{item.actual}</strong> / {item.target} sessions
+          </span>
+          <span>
+            Expected by today: <strong className="text-slate-800">{item.expectedSessions}</strong> ({pct}%)
+          </span>
+        </div>
+
+        <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${
+              item.status === 'delayed'
+                ? 'bg-amber-500'
+                : item.status === 'faster'
+                ? 'bg-blue-600'
+                : item.status === 'on_time'
+                ? 'bg-emerald-600'
+                : 'bg-slate-400'
+            }`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
       </div>
     );
   };
@@ -305,72 +360,217 @@ export function Dashboard() {
   return (
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">Admin Dashboard</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Super Admin Dashboard</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Overview of teacher performance, course pacing, group analytics, and exam alerts
+          Select a teacher, choose a group, and inspect course pacing &amp; student progress
         </p>
       </div>
 
-      {/* Stat cards */}
+      {/* Top stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard icon={Users} label="Total Groups" value={groups.length} color="blue" />
         <StatCard icon={Users} label="Total Students" value={students.length} color="emerald" />
-        <StatCard
-          icon={Clock}
-          label="Active Teachers"
-          value={teachers.filter((t) => t.role === 'teacher').length}
-          color="amber"
-        />
+        <StatCard icon={Clock} label="Active Teachers" value={teachers.length} color="amber" />
         <StatCard icon={AlertTriangle} label="Urgent Exams" value={urgentExams.length} color="red" />
       </div>
 
-      {/* Course Pacing Analysis (Actual vs Target & Start Dates) */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6">
-        <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
-          <BookOpen className="w-5 h-5 text-blue-600" />
-          Course Pacing Analysis (Actual vs Target)
-        </h2>
-        {coursePacingByGroup.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No groups yet.</p>
-        ) : (
-          <div className="space-y-4">
-            {coursePacingByGroup.map(({ group, c1, c2 }) => (
-              <div
-                key={group.id}
-                className="rounded-xl border border-slate-200/80 p-4 space-y-2.5"
-              >
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-bold text-slate-900">
-                    {group.name}
-                    {group.level ? (
-                      <span className="text-xs font-normal text-slate-400 ml-1.5">
-                        ({group.level})
-                      </span>
-                    ) : null}
+      {/* Hierarchical Explorer: Teachers -> Groups -> Selected Group Progress */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
+        {/* Column 1: Teachers list */}
+        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+            <UserCheck className="w-4 h-4 text-blue-600" />
+            Teachers ({teachers.length})
+          </h2>
+
+          {teachers.length === 0 ? (
+            <p className="text-xs text-slate-400 py-6 text-center">No teachers found.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {teachers.map((teacher) => {
+                const count = groups.filter((g) => g.teacher_id === teacher.id).length;
+                const active = teacher.id === selectedTeacherId;
+                return (
+                  <button
+                    key={teacher.id}
+                    type="button"
+                    onClick={() => setSelectedTeacherId(teacher.id)}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex items-center justify-between gap-2 ${
+                      active
+                        ? 'bg-blue-50 border-blue-300 text-blue-900 font-semibold'
+                        : 'bg-white border-transparent hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">{teacher.display_name}</p>
+                      <p className="text-[11px] text-slate-400">{count} groups</p>
+                    </div>
+                    <ChevronRight
+                      className={`w-4 h-4 shrink-0 ${
+                        active ? 'text-blue-600' : 'text-slate-300'
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Column 2: Groups for selected teacher */}
+        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+            <FolderKanban className="w-4 h-4 text-emerald-600" />
+            {selectedTeacher ? `${selectedTeacher.display_name} Groups` : 'Groups'}
+          </h2>
+
+          {teacherGroups.length === 0 ? (
+            <p className="text-xs text-slate-400 py-6 text-center">
+              No groups assigned to this teacher.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {teacherGroups.map((grp) => {
+                const stCount = students.filter((s) => s.group_id === grp.id).length;
+                const active = grp.id === selectedGroupId;
+                return (
+                  <button
+                    key={grp.id}
+                    type="button"
+                    onClick={() => setSelectedGroupId(grp.id)}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex items-center justify-between gap-2 ${
+                      active
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-950 font-semibold'
+                        : 'bg-white border-transparent hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">{grp.name}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {stCount} students{grp.level ? ` · ${grp.level}` : ''}
+                      </p>
+                    </div>
+                    <ChevronRight
+                      className={`w-4 h-4 shrink-0 ${
+                        active ? 'text-emerald-600' : 'text-slate-300'
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Column 3: Selected group progress & course pacing */}
+        <div className="lg:col-span-6 bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+          {!selectedGroup || !selectedGroupDetails ? (
+            <div className="h-full min-h-[260px] flex flex-col items-center justify-center text-center text-slate-400">
+              <BookOpen className="w-10 h-10 text-slate-300 mb-2" />
+              <p className="text-sm font-medium text-slate-600">Select a teacher and group</p>
+              <p className="text-xs mt-1">
+                Pick a group from the middle list to inspect its course pacing and progress.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* Group header */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">{selectedGroup.name}</h2>
+                  <p className="text-xs text-slate-500">
+                    Teacher: <strong>{selectedTeacher?.display_name || '—'}</strong> ·{' '}
+                    {selectedGroupDetails.studentCount} students ·{' '}
+                    {selectedGroupDetails.sessionsCount} sessions
                   </p>
                 </div>
+                <span
+                  className={`text-xs font-bold px-3 py-1 rounded-full ${
+                    selectedGroup.intelligence === 'strong'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : selectedGroup.intelligence === 'weak'
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {selectedGroup.intelligence === 'strong'
+                    ? 'Strong Group'
+                    : selectedGroup.intelligence === 'weak'
+                    ? 'Weak Group'
+                    : 'Unclassified'}
+                </span>
+              </div>
+
+              {/* Course 1 & Course 2 Pacing Analysis */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
+                  <TrendingUp className="w-4 h-4 text-blue-600" />
+                  Courses Pace Analysis (Actual vs Target)
+                </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {renderCourseBadge(c1)}
-                  {renderCourseBadge(c2)}
+                  {renderCourseCard(selectedGroupDetails.c1)}
+                  {renderCourseCard(selectedGroupDetails.c2)}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+
+              {/* Student evaluation summary for this group */}
+              <div className="pt-3 border-t border-slate-100">
+                <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                  <Brain className="w-4 h-4 text-purple-600" />
+                  Group Evaluation Summary ({selectedGroupDetails.evalCount} records)
+                </h3>
+
+                {selectedGroupDetails.evalCount === 0 ? (
+                  <p className="text-xs text-slate-400 py-3 text-center">
+                    No student evaluation records logged for this group yet.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <MetricBar
+                      label="Avg Quiz Score"
+                      value={selectedGroupDetails.avgQuizPct}
+                      max={100}
+                      suffix="%"
+                      color="bg-blue-600"
+                    />
+                    <MetricStat
+                      label="Behavior"
+                      good={selectedGroupDetails.committed}
+                      bad={selectedGroupDetails.disruptive}
+                      goodLabel="Committed"
+                      badLabel="Disruptive"
+                      goodIcon={CheckCircle2}
+                      badIcon={XCircle}
+                    />
+                    <MetricStat
+                      label="Homework"
+                      good={selectedGroupDetails.goodHomework}
+                      bad={selectedGroupDetails.notDoneHomework}
+                      goodLabel="Done Well"
+                      badLabel="Not Done"
+                      goodIcon={CheckCircle2}
+                      badIcon={XCircle}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Exam Alarms */}
+      {/* Upcoming Exam Alarms */}
       {upcomingExams.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+          <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-5 h-5 text-amber-500" />
-            Early Exam Alarms
+            Early Exam Alarms (Next 14 Days)
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {upcomingExams.map((exam) => (
               <div
                 key={exam.id}
-                className={`rounded-lg p-4 border-2 transition-all ${
+                className={`rounded-lg p-3.5 border ${
                   exam.daysUntil <= 3
                     ? 'border-red-200 bg-red-50'
                     : exam.daysUntil <= 7
@@ -378,15 +578,13 @@ export function Dashboard() {
                     : 'border-blue-200 bg-blue-50'
                 }`}
               >
-                <div className="flex items-start justify-between mb-2">
+                <div className="flex items-start justify-between gap-2 mb-1.5">
                   <div>
                     <p className="font-semibold text-slate-900 text-sm">{exam.title}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {exam.group?.name ?? 'Unknown group'}
-                    </p>
+                    <p className="text-xs text-slate-500">{exam.group?.name ?? 'Unknown group'}</p>
                   </div>
                   <span
-                    className={`text-xs font-bold px-2 py-1 rounded-full ${
+                    className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                       exam.daysUntil <= 3
                         ? 'bg-red-600 text-white'
                         : exam.daysUntil <= 7
@@ -410,197 +608,6 @@ export function Dashboard() {
           </div>
         </div>
       )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        {/* Teacher Pace Tracking */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
-            <Clock className="w-5 h-5 text-blue-500" />
-            Teacher Pace Tracking
-          </h2>
-          {teacherPace.length === 0 ? (
-            <p className="text-sm text-slate-400 py-4 text-center">No teacher reports yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {teacherPace.map(({ teacher, onTime, delayed, faster, total }) => (
-                <div key={teacher.id} className="flex items-center gap-3">
-                  <div className="w-32 shrink-0">
-                    <p className="text-sm font-medium text-slate-800 truncate">
-                      {teacher.display_name}
-                    </p>
-                    <p className="text-xs text-slate-400">{total} reports</p>
-                  </div>
-                  <div className="flex-1 flex h-7 rounded-lg overflow-hidden bg-slate-100">
-                    {total > 0 && (
-                      <>
-                        {onTime > 0 && (
-                          <div
-                            className="bg-emerald-500 flex items-center justify-center text-xs text-white font-medium"
-                            style={{ width: `${(onTime / total) * 100}%` }}
-                          >
-                            {onTime > 2 ? onTime : ''}
-                          </div>
-                        )}
-                        {delayed > 0 && (
-                          <div
-                            className="bg-amber-500 flex items-center justify-center text-xs text-white font-medium"
-                            style={{ width: `${(delayed / total) * 100}%` }}
-                          >
-                            {delayed > 2 ? delayed : ''}
-                          </div>
-                        )}
-                        {faster > 0 && (
-                          <div
-                            className="bg-blue-500 flex items-center justify-center text-xs text-white font-medium"
-                            style={{ width: `${(faster / total) * 100}%` }}
-                          >
-                            {faster > 2 ? faster : ''}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div className="flex items-center gap-4 pt-2 text-xs text-slate-500">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-emerald-500" /> On Time
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-amber-500" /> Delayed
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-blue-500" /> Faster
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Group Intelligence */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
-            <Brain className="w-5 h-5 text-purple-500" />
-            Group Intelligence
-          </h2>
-          {groupIntelligence.length === 0 ? (
-            <p className="text-sm text-slate-400 py-4 text-center">No groups yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {groupIntelligence.map(({ group, studentCount }) => (
-                <div
-                  key={group.id}
-                  className="flex items-center justify-between py-2 px-3 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">{group.name}</p>
-                    <p className="text-xs text-slate-400">
-                      {studentCount} students{group.level ? ` · ${group.level}` : ''}
-                    </p>
-                  </div>
-                  <span
-                    className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                      group.intelligence === 'strong'
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : group.intelligence === 'weak'
-                        ? 'bg-red-100 text-red-700'
-                        : 'bg-slate-200 text-slate-500'
-                    }`}
-                  >
-                    {group.intelligence === 'strong'
-                      ? 'Strong'
-                      : group.intelligence === 'weak'
-                      ? 'Weak'
-                      : 'Unclassified'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Student Progress Analytics */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-        <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
-          <TrendingUp className="w-5 h-5 text-emerald-500" />
-          Student Progress Analytics
-        </h2>
-        {groupAnalytics.every((a) => a.evalCount === 0) ? (
-          <p className="text-sm text-slate-400 py-4 text-center">
-            No evaluation data yet. Evaluations will appear here once teachers start logging sessions.
-          </p>
-        ) : (
-          <div className="space-y-4">
-            {groupAnalytics
-              .filter((a) => a.evalCount > 0)
-              .map(
-                ({
-                  group,
-                  avgQuizPct,
-                  evalCount,
-                  committed,
-                  disruptive,
-                  goodHomework,
-                  notDoneHomework,
-                }) => (
-                  <div key={group.id} className="border-b border-slate-100 pb-4 last:border-0">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm font-semibold text-slate-800">{group.name}</p>
-                      <span className="text-xs text-slate-400">
-                        {evalCount} student_evaluations
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      <MetricBar
-                        label="Avg Quiz"
-                        value={avgQuizPct}
-                        max={100}
-                        suffix="%"
-                        color="bg-blue-500"
-                      />
-                      <MetricStat
-                        label="Behavior"
-                        good={committed}
-                        bad={disruptive}
-                        goodLabel="Committed"
-                        badLabel="Disruptive"
-                        goodIcon={CheckCircle2}
-                        badIcon={XCircle}
-                      />
-                      <MetricStat
-                        label="Homework"
-                        good={goodHomework}
-                        bad={notDoneHomework}
-                        goodLabel="Done Well"
-                        badLabel="Not Done"
-                        goodIcon={CheckCircle2}
-                        badIcon={XCircle}
-                      />
-                      <div className="flex items-center justify-center">
-                        <span
-                          className={`text-xs font-bold px-3 py-1.5 rounded-full ${
-                            group.intelligence === 'strong'
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : group.intelligence === 'weak'
-                              ? 'bg-red-100 text-red-700'
-                              : 'bg-slate-100 text-slate-500'
-                          }`}
-                        >
-                          {group.intelligence === 'strong'
-                            ? 'Strong Group'
-                            : group.intelligence === 'weak'
-                            ? 'Weak Group'
-                            : 'Unclassified'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )
-              )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
