@@ -1075,7 +1075,7 @@ export function TeacherWorkspace() {
 
         if (disruptiveNames.length > 0) {
           sections.push(
-            `*ملاحظات على السلوك (طلاب مشاغبين في الـ session):*\n${formatBulletLines(disruptiveNames)}`
+            `*طلاب مشاغبين في الـ session:*\n${formatBulletLines(disruptiveNames)}`
           );
         }
       }
