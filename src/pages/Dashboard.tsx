@@ -13,11 +13,13 @@ import {
   XCircle,
   BookOpen,
   ChevronRight,
+  ArrowLeft,
   FolderKanban,
   UserCheck,
 } from 'lucide-react';
 
 type PaceStatus = 'on_time' | 'delayed' | 'faster' | 'not_started';
+type ExplorerStep = 'teachers' | 'groups' | 'group_detail';
 
 interface GroupWithCourses extends Group {
   teacher_id?: string | null;
@@ -149,6 +151,7 @@ export function Dashboard() {
     (Evaluation & { quiz_max_score?: number })[]
   >([]);
 
+  const [step, setStep] = useState<ExplorerStep>('teachers');
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
 
@@ -191,10 +194,6 @@ export function Dashboard() {
       setAllEvaluations((evalData as (Evaluation & { quiz_max_score?: number })[]) || []);
     }
 
-    if (loadedTeachers.length > 0) {
-      setSelectedTeacherId((prev) => prev || loadedTeachers[0].id);
-    }
-
     setLoading(false);
   }, []);
 
@@ -206,17 +205,6 @@ export function Dashboard() {
     if (!selectedTeacherId) return [];
     return groups.filter((g) => g.teacher_id === selectedTeacherId);
   }, [groups, selectedTeacherId]);
-
-  useEffect(() => {
-    if (teacherGroups.length === 0) {
-      setSelectedGroupId('');
-      return;
-    }
-    const stillExists = teacherGroups.some((g) => g.id === selectedGroupId);
-    if (!stillExists) {
-      setSelectedGroupId(teacherGroups[0].id);
-    }
-  }, [teacherGroups, selectedGroupId]);
 
   const selectedTeacher = useMemo(
     () => teachers.find((t) => t.id === selectedTeacherId) || null,
@@ -309,6 +297,17 @@ export function Dashboard() {
     };
   }, [selectedGroup, students, allGroupSessions, recentReports, allEvaluations]);
 
+  const handleSelectTeacher = (teacherId: string) => {
+    setSelectedTeacherId(teacherId);
+    setSelectedGroupId('');
+    setStep('groups');
+  };
+
+  const handleSelectGroup = (groupId: string) => {
+    setSelectedGroupId(groupId);
+    setStep('group_detail');
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full p-8">
@@ -354,7 +353,8 @@ export function Dashboard() {
           <div>
             <p className="text-sm font-bold text-slate-900">{item.name}</p>
             <p className="text-xs text-slate-500 mt-0.5">
-              Start Date: <strong className="text-slate-700">{item.effectiveStartDate || '—'}</strong>
+              Start Date:{' '}
+              <strong className="text-slate-700">{item.effectiveStartDate || '—'}</strong>
             </p>
           </div>
           <span
@@ -368,10 +368,12 @@ export function Dashboard() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
           <span>
-            Actual: <strong className="text-slate-900">{item.actual}</strong> / {item.target} sessions ({pct}%)
+            Actual: <strong className="text-slate-900">{item.actual}</strong> / {item.target}{' '}
+            sessions ({pct}%)
           </span>
           <span>
-            Expected by today: <strong className="text-slate-800">{item.expectedSessions}</strong> sessions
+            Expected by today:{' '}
+            <strong className="text-slate-800">{item.expectedSessions}</strong> sessions
           </span>
         </div>
 
@@ -394,204 +396,225 @@ export function Dashboard() {
   };
 
   return (
-    <div className="p-4 lg:p-6 max-w-7xl mx-auto">
+    <div className="p-4 lg:p-6 max-w-5xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Super Admin Dashboard</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Select a teacher, choose a group, and inspect course pacing &amp; student progress
+          Tap a teacher to view their groups, then tap a group to view its analysis
         </p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      {/* Top stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
         <StatCard icon={Users} label="Total Groups" value={groups.length} color="blue" />
         <StatCard icon={Users} label="Total Students" value={students.length} color="emerald" />
-        <StatCard icon={Clock} label="Active Teachers" value={teachers.length} color="amber" />
+        <StatCard
+          icon={Clock}
+          label="Active Teachers"
+          value={teachers.length}
+          color="amber"
+        />
         <StatCard icon={AlertTriangle} label="Urgent Exams" value={urgentExams.length} color="red" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
-        {/* Column 1: Teachers list */}
-        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-          <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
-            <UserCheck className="w-4 h-4 text-blue-600" />
-            Teachers ({teachers.length})
-          </h2>
+      {/* Step-by-step Drilldown Container */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5 mb-6">
+        {/* Step 1: Teachers list */}
+        {step === 'teachers' && (
+          <div>
+            <h2 className="text-base font-bold text-slate-900 mb-3 flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-blue-600" />
+              Teachers ({teachers.length})
+            </h2>
 
-          {teachers.length === 0 ? (
-            <p className="text-xs text-slate-400 py-6 text-center">No teachers found.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {teachers.map((teacher) => {
-                const count = groups.filter((g) => g.teacher_id === teacher.id).length;
-                const active = teacher.id === selectedTeacherId;
-                return (
-                  <button
-                    key={teacher.id}
-                    type="button"
-                    onClick={() => setSelectedTeacherId(teacher.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex items-center justify-between gap-2 ${
-                      active
-                        ? 'bg-blue-50 border-blue-300 text-blue-900 font-semibold'
-                        : 'bg-white border-transparent hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm truncate">{teacher.display_name}</p>
-                      <p className="text-[11px] text-slate-400">{count} groups</p>
-                    </div>
-                    <ChevronRight
-                      className={`w-4 h-4 shrink-0 ${
-                        active ? 'text-blue-600' : 'text-slate-300'
-                      }`}
-                    />
-                  </button>
-                );
-              })}
+            {teachers.length === 0 ? (
+              <p className="text-sm text-slate-400 py-8 text-center">No teachers found.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {teachers.map((teacher) => {
+                  const count = groups.filter((g) => g.teacher_id === teacher.id).length;
+                  return (
+                    <button
+                      key={teacher.id}
+                      type="button"
+                      onClick={() => handleSelectTeacher(teacher.id)}
+                      className="w-full text-left p-3.5 rounded-xl border border-slate-200 hover:border-blue-300 hover:bg-blue-50/40 transition-all flex items-center justify-between gap-3 cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900 truncate">
+                          {teacher.display_name}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {count} {count === 1 ? 'group' : 'groups'}
+                        </p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 2: Groups of selected teacher */}
+        {step === 'groups' && (
+          <div>
+            <div className="flex items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setStep('teachers');
+                  setSelectedGroupId('');
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to Teachers</span>
+              </button>
+
+              <span className="text-xs font-medium text-slate-500">
+                {selectedTeacher?.display_name || 'Teacher'} · {teacherGroups.length} groups
+              </span>
             </div>
-          )}
-        </div>
 
-        {/* Column 2: Groups for selected teacher */}
-        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-          <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
-            <FolderKanban className="w-4 h-4 text-emerald-600" />
-            {selectedTeacher ? `${selectedTeacher.display_name} Groups` : 'Groups'}
-          </h2>
+            <h2 className="text-base font-bold text-slate-900 mb-3 flex items-center gap-2">
+              <FolderKanban className="w-5 h-5 text-emerald-600" />
+              {selectedTeacher?.display_name} — Groups
+            </h2>
 
-          {teacherGroups.length === 0 ? (
-            <p className="text-xs text-slate-400 py-6 text-center">
-              No groups assigned to this teacher.
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {teacherGroups.map((grp) => {
-                const stCount = students.filter((s) => s.group_id === grp.id).length;
-                const active = grp.id === selectedGroupId;
-                return (
-                  <button
-                    key={grp.id}
-                    type="button"
-                    onClick={() => setSelectedGroupId(grp.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex items-center justify-between gap-2 ${
-                      active
-                        ? 'bg-emerald-50 border-emerald-300 text-emerald-950 font-semibold'
-                        : 'bg-white border-transparent hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm truncate">{grp.name}</p>
-                      <p className="text-[11px] text-slate-400">
-                        {stCount} students{grp.level ? ` · ${grp.level}` : ''}
-                      </p>
-                    </div>
-                    <ChevronRight
-                      className={`w-4 h-4 shrink-0 ${
-                        active ? 'text-emerald-600' : 'text-slate-300'
-                      }`}
-                    />
-                  </button>
-                );
-              })}
+            {teacherGroups.length === 0 ? (
+              <p className="text-sm text-slate-400 py-8 text-center">
+                No groups assigned to this teacher.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {teacherGroups.map((grp) => {
+                  const stCount = students.filter((s) => s.group_id === grp.id).length;
+                  return (
+                    <button
+                      key={grp.id}
+                      type="button"
+                      onClick={() => handleSelectGroup(grp.id)}
+                      className="w-full text-left p-3.5 rounded-xl border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/40 transition-all flex items-center justify-between gap-3 cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900 truncate">
+                          {grp.name}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {stCount} students{grp.level ? ` · ${grp.level}` : ''}
+                        </p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 3: Selected group analysis */}
+        {step === 'group_detail' && selectedGroup && selectedGroupDetails && (
+          <div className="space-y-5">
+            <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100">
+              <button
+                type="button"
+                onClick={() => setStep('groups')}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to {selectedTeacher?.display_name || 'Teacher'} Groups</span>
+              </button>
+
+              <span
+                className={`text-xs font-bold px-3 py-1 rounded-full ${
+                  selectedGroup.intelligence === 'strong'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : selectedGroup.intelligence === 'weak'
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {selectedGroup.intelligence === 'strong'
+                  ? 'Strong Group'
+                  : selectedGroup.intelligence === 'weak'
+                  ? 'Weak Group'
+                  : 'Unclassified'}
+              </span>
             </div>
-          )}
-        </div>
 
-        {/* Column 3: Selected group progress & course pacing */}
-        <div className="lg:col-span-6 bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-          {!selectedGroup || !selectedGroupDetails ? (
-            <div className="h-full min-h-[260px] flex flex-col items-center justify-center text-center text-slate-400">
-              <BookOpen className="w-10 h-10 text-slate-300 mb-2" />
-              <p className="text-sm font-medium text-slate-600">Select a teacher and group</p>
-              <p className="text-xs mt-1">
-                Pick a group from the middle list to inspect its course pacing and progress.
+            <div>
+              <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-blue-600" />
+                {selectedGroup.name}
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Teacher: <strong>{selectedTeacher?.display_name || '—'}</strong> ·{' '}
+                {selectedGroupDetails.studentCount} students ·{' '}
+                {selectedGroupDetails.sessionsCount} sessions
               </p>
             </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">{selectedGroup.name}</h2>
-                  <p className="text-xs text-slate-500">
-                    Teacher: <strong>{selectedTeacher?.display_name || '—'}</strong> ·{' '}
-                    {selectedGroupDetails.studentCount} students ·{' '}
-                    {selectedGroupDetails.sessionsCount} sessions
-                  </p>
-                </div>
-                <span
-                  className={`text-xs font-bold px-3 py-1 rounded-full ${
-                    selectedGroup.intelligence === 'strong'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : selectedGroup.intelligence === 'weak'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-slate-100 text-slate-600'
-                  }`}
-                >
-                  {selectedGroup.intelligence === 'strong'
-                    ? 'Strong Group'
-                    : selectedGroup.intelligence === 'weak'
-                    ? 'Weak Group'
-                    : 'Unclassified'}
-                </span>
-              </div>
 
-              <div className="space-y-3">
-                <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-blue-600" />
-                  Courses Pace Analysis (1 Session / Week)
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {renderCourseCard(selectedGroupDetails.c1)}
-                  {renderCourseCard(selectedGroupDetails.c2)}
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-slate-100">
-                <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-3 flex items-center gap-1.5">
-                  <Brain className="w-4 h-4 text-purple-600" />
-                  Group Evaluation Summary ({selectedGroupDetails.evalCount} records)
-                </h3>
-
-                {selectedGroupDetails.evalCount === 0 ? (
-                  <p className="text-xs text-slate-400 py-3 text-center">
-                    No student evaluation records logged for this group yet.
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <MetricBar
-                      label="Avg Quiz Score"
-                      value={selectedGroupDetails.avgQuizPct}
-                      max={100}
-                      suffix="%"
-                      color="bg-blue-600"
-                    />
-                    <MetricStat
-                      label="Behavior"
-                      good={selectedGroupDetails.committed}
-                      bad={selectedGroupDetails.disruptive}
-                      goodLabel="Committed"
-                      badLabel="Disruptive"
-                      goodIcon={CheckCircle2}
-                      badIcon={XCircle}
-                    />
-                    <MetricStat
-                      label="Homework"
-                      good={selectedGroupDetails.goodHomework}
-                      bad={selectedGroupDetails.notDoneHomework}
-                      goodLabel="Done Well"
-                      badLabel="Not Done"
-                      goodIcon={CheckCircle2}
-                      badIcon={XCircle}
-                    />
-                  </div>
-                )}
+            <div className="space-y-3">
+              <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
+                <TrendingUp className="w-4 h-4 text-blue-600" />
+                Courses Pace Analysis (1 Session / Week)
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {renderCourseCard(selectedGroupDetails.c1)}
+                {renderCourseCard(selectedGroupDetails.c2)}
               </div>
             </div>
-          )}
-        </div>
+
+            <div className="pt-3 border-t border-slate-100">
+              <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                <Brain className="w-4 h-4 text-purple-600" />
+                Group Evaluation Summary ({selectedGroupDetails.evalCount} records)
+              </h3>
+
+              {selectedGroupDetails.evalCount === 0 ? (
+                <p className="text-xs text-slate-400 py-3 text-center">
+                  No student evaluation records logged for this group yet.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <MetricBar
+                    label="Avg Quiz Score"
+                    value={selectedGroupDetails.avgQuizPct}
+                    max={100}
+                    suffix="%"
+                    color="bg-blue-600"
+                  />
+                  <MetricStat
+                    label="Behavior"
+                    good={selectedGroupDetails.committed}
+                    bad={selectedGroupDetails.disruptive}
+                    goodLabel="Committed"
+                    badLabel="Disruptive"
+                    goodIcon={CheckCircle2}
+                    badIcon={XCircle}
+                  />
+                  <MetricStat
+                    label="Homework"
+                    good={selectedGroupDetails.goodHomework}
+                    bad={selectedGroupDetails.notDoneHomework}
+                    goodLabel="Done Well"
+                    badLabel="Not Done"
+                    goodIcon={CheckCircle2}
+                    badIcon={XCircle}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Upcoming Exam Alarms */}
       {upcomingExams.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
           <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-5 h-5 text-amber-500" />
             Early Exam Alarms (Next 14 Days)
@@ -660,14 +683,14 @@ function StatCard({
     red: 'bg-red-50 text-red-600',
   };
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center gap-3">
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3.5 sm:p-4 flex items-center gap-3">
       <div
-        className={`w-11 h-11 rounded-lg flex items-center justify-center shrink-0 ${colors[color]}`}
+        className={`w-10 h-10 sm:w-11 sm:h-11 rounded-lg flex items-center justify-center shrink-0 ${colors[color]}`}
       >
-        <Icon className="w-6 h-6" />
+        <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold text-slate-900 leading-tight">{value}</p>
+        <p className="text-xl sm:text-2xl font-bold text-slate-900 leading-tight">{value}</p>
         <p className="text-xs text-slate-500 truncate">{label}</p>
       </div>
     </div>
