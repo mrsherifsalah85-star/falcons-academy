@@ -23,6 +23,7 @@ import {
   Hash,
   TrendingUp,
   UserCheck,
+  History,
 } from 'lucide-react';
 
 const READING_OPTIONS = ['Good', 'Needs Practice', 'Needs Study More'];
@@ -50,6 +51,14 @@ interface ExtendedSessionReport extends SessionReport {
   course2_active?: boolean | null;
   created_by?: string | null;
   updated_by?: string | null;
+}
+
+interface SessionAuditLogEntry {
+  id: string;
+  session_id: string;
+  actor_id: string | null;
+  action_type: 'created' | 'updated' | string;
+  created_at: string;
 }
 
 interface FieldShareConfig {
@@ -232,6 +241,7 @@ export function TeacherWorkspace() {
   const [students, setStudents] = useState<Student[]>([]);
   const [sessionReports, setSessionReports] = useState<ExtendedSessionReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<ExtendedSessionReport | null>(null);
+  const [auditLogs, setAuditLogs] = useState<SessionAuditLogEntry[]>([]);
 
   const [sessionContent, setSessionContent] = useState('');
   const [sessionHomework, setSessionHomework] = useState('');
@@ -272,7 +282,9 @@ export function TeacherWorkspace() {
   );
 
   const fetchProfilesByIds = useCallback(async (ids: string[]) => {
-    const cleanIds = Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+    const cleanIds = Array.from(
+      new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0))
+    );
     if (cleanIds.length === 0) return;
 
     const { data } = await supabase
@@ -292,6 +304,27 @@ export function TeacherWorkspace() {
       });
     }
   }, []);
+
+  const loadAuditLogs = useCallback(
+    async (sessionId: string) => {
+      const { data, error } = await supabase
+        .from('session_audit_logs')
+        .select('id, session_id, actor_id, action_type, created_at')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        const rows = data as SessionAuditLogEntry[];
+        setAuditLogs(rows);
+        await fetchProfilesByIds(
+          rows.map((r) => r.actor_id).filter((id): id is string => Boolean(id))
+        );
+      } else {
+        setAuditLogs([]);
+      }
+    },
+    [fetchProfilesByIds]
+  );
 
   const loadGroups = useCallback(async () => {
     if (!profile?.id) {
@@ -385,6 +418,7 @@ export function TeacherWorkspace() {
       setCustomColumns([]);
       setSessionReports([]);
       setSelectedReport(null);
+      setAuditLogs([]);
       return;
     }
 
@@ -438,8 +472,10 @@ export function TeacherWorkspace() {
   useEffect(() => {
     if (!selectedReport) {
       setEvaluations([]);
+      setAuditLogs([]);
       return;
     }
+
     supabase
       .from('student_evaluations')
       .select('*')
@@ -454,7 +490,9 @@ export function TeacherWorkspace() {
           setEvaluations((data as Evaluation[]) || []);
         }
       });
-  }, [selectedReport]);
+
+    loadAuditLogs(selectedReport.id);
+  }, [selectedReport, loadAuditLogs]);
 
   useEffect(() => {
     if (selectedReport) {
@@ -478,27 +516,58 @@ export function TeacherWorkspace() {
     }
   }, [selectedReport]);
 
-  const loggerInfo = useMemo(() => {
-    if (!selectedReport) {
-      return {
-        name: profile?.display_name || 'Current User',
-        isAssistantOrOther: profile?.role !== 'teacher',
-        isNew: true,
-      };
+  const contributorsList = useMemo(() => {
+    if (!selectedReport) return [];
+
+    const orderedEntries: {
+      key: string;
+      name: string;
+      actionLabel: string;
+      timeLabel: string;
+    }[] = [];
+
+    for (const log of auditLogs) {
+      const actorId = log.actor_id || '';
+      const name =
+        (actorId && profilesMap[actorId]) ||
+        (actorId === profile?.id && profile?.display_name) ||
+        'Staff Member';
+      const timeLabel = log.created_at
+        ? new Date(log.created_at).toLocaleString('ar-EG', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : '';
+      orderedEntries.push({
+        key: log.id,
+        name,
+        actionLabel: log.action_type === 'created' ? 'Created' : 'Updated',
+        timeLabel,
+      });
     }
-    const actorId =
-      selectedReport.updated_by || selectedReport.created_by || selectedReport.teacher_id || '';
-    const resolvedName =
-      (actorId && profilesMap[actorId]) ||
-      (actorId === profile?.id && profile?.display_name) ||
-      'Staff Member';
-    const isTeacherSelf = actorId === selectedReport.teacher_id;
-    return {
-      name: resolvedName,
-      isAssistantOrOther: !isTeacherSelf,
-      isNew: false,
-    };
-  }, [selectedReport, profilesMap, profile]);
+
+    if (orderedEntries.length === 0) {
+      const fallbackIds = Array.from(
+        new Set(
+          [selectedReport.updated_by, selectedReport.created_by, selectedReport.teacher_id].filter(
+            (id): id is string => Boolean(id)
+          )
+        )
+      );
+      for (const actorId of fallbackIds) {
+        orderedEntries.push({
+          key: actorId,
+          name: profilesMap[actorId] || 'Staff Member',
+          actionLabel: actorId === selectedReport.teacher_id ? 'Teacher' : 'Staff / Assistant',
+          timeLabel: selectedReport.report_date,
+        });
+      }
+    }
+
+    return orderedEntries;
+  }, [selectedReport, auditLogs, profilesMap, profile]);
 
   const courseStats = useMemo(() => {
     const c1Sessions = sessionReports.filter((r) => Boolean(r.course1_active));
@@ -647,6 +716,7 @@ export function TeacherWorkspace() {
         : 'on_time';
 
       let reportId: string;
+      const isEditingExisting = Boolean(selectedReport);
       const sessionPayload = {
         content: sessionContent,
         session_homework: sessionHomework,
@@ -686,6 +756,13 @@ export function TeacherWorkspace() {
         setSelectedReport(data as ExtendedSessionReport);
       }
 
+      // Record contributor in session_audit_logs
+      await supabase.from('session_audit_logs').insert({
+        session_id: reportId,
+        actor_id: profile.id,
+        action_type: isEditingExisting ? 'updated' : 'created',
+      });
+
       for (const student of students) {
         const existing = evaluations.find((e) => e.student_id === student.id);
         const payload = {
@@ -722,9 +799,9 @@ export function TeacherWorkspace() {
       const updatedReports = (reportsData as ExtendedSessionReport[]) || [];
       setSessionReports(updatedReports);
       await fetchProfilesByIds(
-        updatedReports.flatMap((r) => [r.updated_by, r.created_by, r.teacher_id]).filter(
-          (id): id is string => Boolean(id)
-        )
+        updatedReports
+          .flatMap((r) => [r.updated_by, r.created_by, r.teacher_id])
+          .filter((id): id is string => Boolean(id))
       );
 
       const { data: evalData, error: evalErr } = await supabase
@@ -733,6 +810,8 @@ export function TeacherWorkspace() {
         .eq('session_report_id', reportId);
       if (evalErr) throw evalErr;
       setEvaluations((evalData as Evaluation[]) || []);
+
+      await loadAuditLogs(reportId);
 
       setSaveMsg({ type: 'success', text: 'Session report & course progress saved successfully.' });
       setTimeout(() => setSaveMsg(null), 3000);
@@ -754,6 +833,7 @@ export function TeacherWorkspace() {
     setQuizMaxScore(100);
     setDictationMaxScore(10);
     setEvaluations([]);
+    setAuditLogs([]);
   };
 
   const handleDeleteReport = async () => {
@@ -1522,26 +1602,27 @@ ${followUpSection}
           </div>
         </div>
 
-        {selectedGroupId && (
-          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-slate-500">
-              {loggerInfo.isNew
-                ? 'Creating new session entry as:'
-                : 'Last data entry / update for this session:'}
-            </span>
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-semibold border ${
-                loggerInfo.isAssistantOrOther
-                  ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                  : 'bg-slate-100 text-slate-700 border-slate-200'
-              }`}
-            >
-              <UserCheck className="w-3.5 h-3.5" />
-              <span>
-                {loggerInfo.isAssistantOrOther ? 'Assistant / Staff:' : 'Logged by:'}{' '}
-                <strong>{loggerInfo.name}</strong>
-              </span>
-            </span>
+        {selectedReport && contributorsList.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+              <History className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Contributors &amp; Edit History ({contributorsList.length}):</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {contributorsList.map((entry) => (
+                <span
+                  key={entry.key}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-indigo-50 text-indigo-900 border border-indigo-200"
+                >
+                  <UserCheck className="w-3 h-3 text-indigo-600" />
+                  <strong>{entry.name}</strong>
+                  <span className="text-[11px] text-indigo-600">({entry.actionLabel})</span>
+                  {entry.timeLabel && (
+                    <span className="text-[10px] text-slate-500">· {entry.timeLabel}</span>
+                  )}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>
